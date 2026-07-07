@@ -1,0 +1,315 @@
+From 0769dd8b676d1b9e0e4e7b2ce276eb4303c36ac2 Mon Sep 17 00:00:00 2001
+From: andy-emerson <emerson.andrew@gmail.com>
+Date: Tue, 7 Jul 2026 21:35:20 +0000
+Subject: [PATCH 1/2] fix 32-bit usize overflow in matrix-free operator modules
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+the zero-`v0` fallback in the partial eigen/svd operators splits
+`n: usize` into two `u32` halves with `(n >> 32)`, which is a
+compile-time overflow error on 32-bit targets:
+
+    error: this arithmetic operation will overflow
+      --> faer/src/./operator/eigen/mod.rs:319:13
+        |
+    319 |             let n1 = (n >> 32) as u32;
+        |                      ^^^^^^^^^ attempt to shift right by `32_i32`, which would overflow
+
+as a result faer 0.24.4 does not build at all on wasm32-unknown-unknown,
+armv7, i686, or any other 32-bit target (with any feature set — the
+operator module is unconditional). widen to u64 before shifting:
+`((n as u64) >> 32) as u32`, which is a no-op on 64-bit and makes the
+expression well-defined on 32-bit.
+
+the fallback only runs when the caller passes an all-zero initial
+vector, a path no existing test exercised; add zero-`v0` regression
+tests for all four affected sites (partial_schur real + cplx,
+partial_self_adjoint_eigen, partial_svd).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ faer/src/operator/eigen/mod.rs              | 113 +++++++++++++++++++-
+ faer/src/operator/self_adjoint_eigen/mod.rs |  52 ++++++++-
+ faer/src/operator/svd/mod.rs                |  54 +++++++++-
+ 3 files changed, 215 insertions(+), 4 deletions(-)
+
+diff --git a/faer/src/operator/eigen/mod.rs b/faer/src/operator/eigen/mod.rs
+index bd253bf..eb9a998 100644
+--- a/faer/src/operator/eigen/mod.rs
++++ b/faer/src/operator/eigen/mod.rs
+@@ -316,7 +316,7 @@ fn partial_schur_real_imp<T: RealField>(
+ 				.for_each(|unzip!(y, x): Zip!(&mut T, &T)| *y = f * x);
+ 		} else {
+ 			let n0 = n as u32;
+-			let n1 = (n >> 32) as u32;
++			let n1 = ((n as u64) >> 32) as u32;
+ 			let n = from_f64::<T>(n0 as f64) + from_f64::<T>(n1 as f64);
+ 			let f = n.sqrt().recip();
+ 			zip!(V.rb_mut().col_mut(0)).for_each(|unzip!(y)| *y = f.copy());
+@@ -768,7 +768,7 @@ fn partial_schur_cplx_imp<T: ComplexField>(
+ 				.for_each(|unzip!(y, x): Zip!(&mut T, &T)| *y = x.mul_real(&f));
+ 		} else {
+ 			let n0 = n as u32;
+-			let n1 = (n >> 32) as u32;
++			let n1 = ((n as u64) >> 32) as u32;
+ 			let n = from_f64::<T>(n0 as f64) + from_f64::<T>(n1 as f64);
+ 			let f = n.sqrt().recip();
+ 			zip!(V.rb_mut().col_mut(0)).for_each(|unzip!(y)| *y = f.copy());
+@@ -1676,6 +1676,115 @@ mod tests {
+ 			assert!((A * V.col(j) - Scale(w[j]) * V.col(j)).norm_l2() < 1e-10);
+ 		}
+ 	}
++	// the zero-`v0` fallback splits `n: usize` into two `u32` halves with
++	// `n >> 32`, which fails to compile on 32-bit targets (wasm32, armv7,
++	// i686); it is also the only code path not covered by the other tests,
++	// which all pass a random nonzero `v0`
++	#[test]
++	fn test_zero_initial_vector_real() {
++		let rng = &mut StdRng::seed_from_u64(1);
++		let n = 100;
++		let n_eigval = 20;
++		let min_dim = 30;
++		let max_dim = 60;
++		let restarts = 1000;
++		let mat = CwiseMatDistribution {
++			nrows: n,
++			ncols: n,
++			dist: StandardNormal,
++		};
++		let A: Mat<f64> = mat.sample(rng);
++		let v0: Col<f64> = Col::zeros(n);
++		let A = A.as_ref();
++		let v0 = v0.as_ref();
++		let par = Par::Seq;
++		let mem = &mut MemBuffer::new(partial_eigen_scratch(
++			&A,
++			n_eigval,
++			par,
++			PartialEigenParams {
++				min_dim,
++				max_dim,
++				max_restarts: restarts,
++				..Default::default()
++			},
++		));
++		let mut V = Mat::zeros(n, n_eigval);
++		let mut w = vec![c64::ZERO; n_eigval];
++		let info = partial_eigen(
++			V.rb_mut(),
++			&mut w,
++			&A,
++			v0,
++			f64::EPSILON * 128.0,
++			par,
++			MemStack::new(mem),
++			PartialEigenParams {
++				min_dim,
++				max_dim,
++				max_restarts: restarts,
++				..Default::default()
++			},
++		);
++		assert!(info.n_converged_eigen > 0);
++		assert!(w.iter().map(|x| x.norm()).is_sorted_by(|x, y| x >= y));
++		let A = &zip!(A).map(|unzip!(x)| Complex::from(*x));
++		for j in 0..info.n_converged_eigen {
++			assert!((A * V.col(j) - Scale(w[j]) * V.col(j)).norm_l2() < 1e-10);
++		}
++	}
++	#[test]
++	fn test_zero_initial_vector_cplx() {
++		let rng = &mut StdRng::seed_from_u64(1);
++		let n = 100;
++		let n_eigval = 20;
++		let min_dim = 30;
++		let max_dim = 60;
++		let restarts = 1000;
++		let mat = CwiseMatDistribution {
++			nrows: n,
++			ncols: n,
++			dist: ComplexDistribution::new(StandardNormal, StandardNormal),
++		};
++		let A: Mat<c64> = mat.sample(rng);
++		let v0: Col<c64> = Col::zeros(n);
++		let A = A.as_ref();
++		let v0 = v0.as_ref();
++		let par = Par::Seq;
++		let mem = &mut MemBuffer::new(partial_eigen_scratch(
++			&A,
++			n_eigval,
++			par,
++			PartialEigenParams {
++				min_dim,
++				max_dim,
++				max_restarts: restarts,
++				..Default::default()
++			},
++		));
++		let mut V = Mat::zeros(n, n_eigval);
++		let mut w = vec![c64::ZERO; n_eigval];
++		let info = partial_eigen(
++			V.rb_mut(),
++			&mut w,
++			&A,
++			v0,
++			f64::EPSILON * 128.0,
++			par,
++			MemStack::new(mem),
++			PartialEigenParams {
++				min_dim,
++				max_dim,
++				max_restarts: restarts,
++				..Default::default()
++			},
++		);
++		assert!(info.n_converged_eigen > 0);
++		assert!(w.iter().map(|x| x.norm()).is_sorted_by(|x, y| x >= y));
++		for j in 0..info.n_converged_eigen {
++			assert!((A * V.col(j) - Scale(w[j]) * V.col(j)).norm_l2() < 1e-10);
++		}
++	}
+ 	#[test]
+ 	fn test_small_cplx() {
+ 		let rng = &mut StdRng::seed_from_u64(1);
+diff --git a/faer/src/operator/self_adjoint_eigen/mod.rs b/faer/src/operator/self_adjoint_eigen/mod.rs
+index 48f4acf..7b36e1b 100644
+--- a/faer/src/operator/self_adjoint_eigen/mod.rs
++++ b/faer/src/operator/self_adjoint_eigen/mod.rs
+@@ -105,7 +105,7 @@ pub fn partial_self_adjoint_eigen_imp<T: ComplexField>(
+ 				.for_each(|unzip!(y, x): Zip!(&mut T, &T)| *y = x.mul_real(f));
+ 		} else {
+ 			let n0 = n as u32;
+-			let n1 = (n >> 32) as u32;
++			let n1 = ((n as u64) >> 32) as u32;
+ 			let n = from_f64::<T>(n0 as f64) + from_f64::<T>(n1 as f64);
+ 			let f = n.sqrt().recip();
+ 			zip!(V.rb_mut().col_mut(0)).for_each(|unzip!(y)| *y = f.copy());
+@@ -348,4 +348,54 @@ mod tests {
+ 			assert!((A * V.col(j) - Scale(w[j]) * V.col(j)).norm_l2() < 1e-10);
+ 		}
+ 	}
++
++	// the zero-`v0` fallback splits `n: usize` into two `u32` halves with
++	// `n >> 32`, which fails to compile on 32-bit targets (wasm32, armv7,
++	// i686); it is also the only code path not covered by the other tests,
++	// which all pass a random nonzero `v0`
++	#[test]
++	fn test_zero_initial_vector() {
++		let rng = &mut StdRng::seed_from_u64(1);
++		let n = 512;
++		let n_eigval = 32;
++		let mat = CwiseMatDistribution {
++			nrows: n,
++			ncols: n,
++			dist: ComplexDistribution::new(StandardNormal, StandardNormal),
++		};
++		let A: Mat<c64> = mat.sample(rng);
++		let A = &A + A.adjoint();
++		let v0: Col<c64> = Col::zeros(n);
++		let A = A.as_ref();
++		let v0 = v0.as_ref();
++		let par = Par::Seq;
++		let mem = &mut MemBuffer::new(
++			crate::matrix_free::eigen::partial_eigen_scratch(
++				&A,
++				n_eigval,
++				par,
++				default(),
++			),
++		);
++		let mut V = Mat::zeros(n, n_eigval);
++		let mut w = vec![c64::ZERO; n_eigval];
++		let n_converged = partial_self_adjoint_eigen_imp(
++			V.rb_mut(),
++			&mut w,
++			&A,
++			v0,
++			32,
++			64,
++			n_eigval,
++			f64::EPSILON * 128.0,
++			1000,
++			par,
++			MemStack::new(mem),
++		);
++		assert!(w.iter().map(|x| x.norm()).is_sorted_by(|x, y| x >= y));
++		assert!(n_converged == n_eigval);
++		for j in 0..n_converged {
++			assert!((A * V.col(j) - Scale(w[j]) * V.col(j)).norm_l2() < 1e-10);
++		}
++	}
+ }
+diff --git a/faer/src/operator/svd/mod.rs b/faer/src/operator/svd/mod.rs
+index 3a6aee9..2a064af 100644
+--- a/faer/src/operator/svd/mod.rs
++++ b/faer/src/operator/svd/mod.rs
+@@ -156,7 +156,7 @@ pub fn partial_svd_imp<T: ComplexField>(
+ 			.for_each(|unzip!(y, x): Zip!(&mut _, &_)| *y = x.mul_real(f));
+ 	} else {
+ 		let n0 = n as u32;
+-		let n1 = (n >> 32) as u32;
++		let n1 = ((n as u64) >> 32) as u32;
+ 		let n = from_f64::<T>(n0 as f64) + from_f64::<T>(n1 as f64);
+ 		let ref f = n.sqrt().recip();
+ 		zip!(Q.rb_mut().col_mut(0)).for_each(|unzip!(y)| *y = f.copy());
+@@ -415,4 +415,56 @@ mod tests {
+ 			);
+ 		}
+ 	}
++
++	// the zero-`v0` fallback splits `n: usize` into two `u32` halves with
++	// `n >> 32`, which fails to compile on 32-bit targets (wasm32, armv7,
++	// i686); it is also the only code path not covered by the other tests,
++	// which all pass a random nonzero `v0`
++	#[test]
++	fn test_zero_initial_vector() {
++		let rng = &mut StdRng::seed_from_u64(1);
++		let m = 768;
++		let n = 512;
++		let n_eigval = 32;
++		let mat = CwiseMatDistribution {
++			nrows: m,
++			ncols: n,
++			dist: ComplexDistribution::new(StandardNormal, StandardNormal),
++		};
++		let A: Mat<c64> = mat.sample(rng);
++		let v0: Col<c64> = Col::zeros(n);
++		let A = A.as_ref();
++		let v0 = v0.as_ref();
++		let par = Par::Seq;
++		let mem = &mut MemBuffer::new(StackReq::new::<u8>(1024 * 1024 * 512));
++		let mut U = Mat::zeros(m, n_eigval);
++		let mut V = Mat::zeros(n, n_eigval);
++		let mut s = vec![c64::ZERO; n_eigval];
++		let n_converged = partial_svd_imp(
++			U.rb_mut(),
++			V.rb_mut(),
++			&mut s,
++			&A,
++			v0,
++			32,
++			64,
++			n_eigval,
++			f64::EPSILON * 128.0,
++			1000,
++			par,
++			MemStack::new(mem),
++		);
++		assert!(s.iter().map(|x| x.norm()).is_sorted_by(|x, y| x >= y));
++		assert!(n_converged == n_eigval);
++		for j in 0..n_converged {
++			assert!(
++				(A.adjoint() * (A * V.col(j)) - Scale(s[j] * s[j]) * V.col(j))
++					.norm_l2() < 1e-10
++			);
++			assert!(
++				(A * (A.adjoint() * U.col(j)) - Scale(s[j] * s[j]) * U.col(j))
++					.norm_l2() < 1e-10
++			);
++		}
++	}
+ }
+-- 
+2.43.0
+

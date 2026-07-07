@@ -1,0 +1,212 @@
+From 58f15dfd06699bc92ab5f157d9cdb95ec5ed87e2 Mon Sep 17 00:00:00 2001
+From: andy-emerson <emerson.andrew@gmail.com>
+Date: Tue, 7 Jul 2026 21:37:59 +0000
+Subject: [PATCH 2/2] add wasm32 CI job with a node smoke test
+
+build-check faer for wasm32-unknown-unknown with
+`--no-default-features --features linalg` (and `linalg,std`) so 32-bit
+breakage like the `(n >> 32)` overflow can't silently regress, and add
+`faer-wasm-test` (excluded from the workspace, like faer-no-std-test):
+a `no_std` cdylib consumer that builds to a zero-import wasm module and
+runs matmul + partial-pivot LU solve under node, checked against
+hand-computed values.
+
+there is real faer-on-wasm usage in the wild (#222); this makes the
+target a checked configuration.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .woodpecker/wasm.yaml     | 19 +++++++++
+ Cargo.toml                |  1 +
+ faer-wasm-test/Cargo.toml | 18 +++++++++
+ faer-wasm-test/run.mjs    | 22 ++++++++++
+ faer-wasm-test/src/lib.rs | 85 +++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 145 insertions(+)
+ create mode 100644 .woodpecker/wasm.yaml
+ create mode 100644 faer-wasm-test/Cargo.toml
+ create mode 100644 faer-wasm-test/run.mjs
+ create mode 100644 faer-wasm-test/src/lib.rs
+
+diff --git a/.woodpecker/wasm.yaml b/.woodpecker/wasm.yaml
+new file mode 100644
+index 0000000..cc16a7c
+--- /dev/null
++++ b/.woodpecker/wasm.yaml
+@@ -0,0 +1,19 @@
++when:
++  - event: pull_request
++  - event: push
++    branch: main
++
++steps:
++  - name: build
++    image: rust
++    environment:
++      CARGO_TERM_COLOR: always
++    commands:
++      - rustup target add wasm32-unknown-unknown
++      - cd ./faer && cargo check --target wasm32-unknown-unknown --no-default-features --features linalg && cd ..
++      - cd ./faer && cargo check --target wasm32-unknown-unknown --no-default-features --features linalg,std && cd ..
++      - cd ./faer-wasm-test && cargo build --target wasm32-unknown-unknown --release
++  - name: smoke-test
++    image: node:22
++    commands:
++      - cd ./faer-wasm-test && node run.mjs
+diff --git a/Cargo.toml b/Cargo.toml
+index 2e259d5..4c2f047 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -7,6 +7,7 @@ members = [
+ ]
+ exclude = [
+   "faer-no-std-test",
++  "faer-wasm-test",
+   "eigen-bench-setup"
+ ]
+ 
+diff --git a/faer-wasm-test/Cargo.toml b/faer-wasm-test/Cargo.toml
+new file mode 100644
+index 0000000..ccd7e97
+--- /dev/null
++++ b/faer-wasm-test/Cargo.toml
+@@ -0,0 +1,18 @@
++[package]
++name = "faer-wasm-test"
++version = "0.1.0"
++edition = "2021"
++publish = false
++
++[lib]
++crate-type = ["cdylib"]
++
++[dependencies]
++faer = { path = "../faer", default-features = false, features = ["linalg"] }
++
++[profile.release]
++opt-level = "z"
++lto = true
++codegen-units = 1
++panic = "abort"
++strip = true
+diff --git a/faer-wasm-test/run.mjs b/faer-wasm-test/run.mjs
+new file mode 100644
+index 0000000..92dfa8e
+--- /dev/null
++++ b/faer-wasm-test/run.mjs
+@@ -0,0 +1,22 @@
++import { readFileSync } from 'node:fs';
++
++const wasm = readFileSync(
++	new URL(
++		'./target/wasm32-unknown-unknown/release/faer_wasm_test.wasm',
++		import.meta.url,
++	),
++);
++const { instance } = await WebAssembly.instantiate(wasm, {});
++const { matmul_trace, lu_solve_sum } = instance.exports;
++
++let failed = false;
++const check = (name, got, want) => {
++	const ok = Math.abs(got - want) < 1e-12;
++	console.log(`${name} = ${got} (want ${want}) ${ok ? 'ok' : 'FAIL'}`);
++	failed ||= !ok;
++};
++
++check('matmul_trace', matmul_trace(), 114);
++check('lu_solve_sum', lu_solve_sum(), 31 / 35);
++
++process.exit(failed ? 1 : 0);
+diff --git a/faer-wasm-test/src/lib.rs b/faer-wasm-test/src/lib.rs
+new file mode 100644
+index 0000000..2b5daaf
+--- /dev/null
++++ b/faer-wasm-test/src/lib.rs
+@@ -0,0 +1,85 @@
++//! wasm32 smoke test: builds faer (`no_std`, `linalg` only) to
++//! `wasm32-unknown-unknown` as a zero-import module and exposes a couple of
++//! computations with hand-verified results, checked by `run.mjs` under node.
++
++#![no_std]
++
++extern crate alloc;
++
++use faer::Mat;
++
++/// trace of $A B$ for $A_{ij} = i + 2j + 1$, $B_{ij} = 3i + j - 2$ (3×3);
++/// hand-computed value: $21 + 36 + 57 = 114$
++#[no_mangle]
++pub extern "C" fn matmul_trace() -> f64 {
++	let a = Mat::from_fn(3, 3, |i, j| (i + 2 * j) as f64 + 1.0);
++	let b = Mat::from_fn(3, 3, |i, j| (3 * i + j) as f64 - 2.0);
++	let c = &a * &b;
++	c[(0, 0)] + c[(1, 1)] + c[(2, 2)]
++}
++
++/// sum of the solution of a 3×3 system via partial-pivot LU;
++/// hand-computed exact value: $31/35 = 0.8857142857\ldots$
++#[no_mangle]
++pub extern "C" fn lu_solve_sum() -> f64 {
++	use faer::prelude::*;
++	let a = faer::mat![[4.0, 3.0, 2.0], [2.0, 5.0, 1.0], [1.0, 1.0, 3.0f64]];
++	let rhs = faer::mat![[1.0], [2.0], [3.0f64]];
++	let lu = a.partial_piv_lu();
++	let x = lu.solve(&rhs);
++	x[(0, 0)] + x[(1, 0)] + x[(2, 0)]
++}
++
++// leak-only bump allocator over `memory.grow`, so the module needs no
++// imports at all; fine for a smoke test
++mod wasm_shim {
++	use core::alloc::{GlobalAlloc, Layout};
++
++	struct Bump;
++
++	unsafe extern "C" {
++		static __heap_base: u8;
++	}
++
++	static mut OFFSET: usize = 0;
++
++	#[inline]
++	unsafe fn offset() -> usize {
++		unsafe {
++			if OFFSET == 0 {
++				OFFSET = &__heap_base as *const u8 as usize;
++			}
++			OFFSET
++		}
++	}
++
++	unsafe impl GlobalAlloc for Bump {
++		unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++			unsafe {
++				let align = layout.align().max(16);
++				let base = (offset() + align - 1) & !(align - 1);
++				let end = base + layout.size();
++				let cur_pages = core::arch::wasm32::memory_size(0);
++				let need = (end + 0xFFFF) / 0x10000;
++				if need > cur_pages
++					&& core::arch::wasm32::memory_grow(0, need - cur_pages)
++						== usize::MAX
++				{
++					return core::ptr::null_mut();
++				}
++				OFFSET = end;
++				base as *mut u8
++			}
++		}
++
++		unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
++	}
++
++	#[global_allocator]
++	static A: Bump = Bump;
++
++	#[panic_handler]
++	fn panic(_: &core::panic::PanicInfo) -> ! {
++		core::arch::wasm32::unreachable()
++	}
++}
+-- 
+2.43.0
+

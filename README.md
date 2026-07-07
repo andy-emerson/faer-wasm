@@ -16,6 +16,10 @@ GitHub is a mirror). See ROADMAP.md; empirical basis in docs/.
   `wasm32-unknown-unknown` (with the patch applied to a local faer checkout)
   and runs matmul / LU / QR / SVD / EVD under node, verified bit-identical
   to native x86-64.
+- `upstream/` — the prepared Phase 0 contribution: `git am`-able patches
+  (the 32-bit fix + regression tests, and a wasm32 CI job with a node
+  smoke test) plus the PR description to file on Codeberg
+  (`PR-32bit-fix-and-wasm-ci.md`).
 - `docs/research-faer-wasm-2026-07.md` — the verification research:
   measured sizes (51 KiB matmul → ~396 KiB full suite), pulp simd128 status
   (already complete upstream), LinearAlgebra coverage matrix.

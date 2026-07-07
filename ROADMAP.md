@@ -28,10 +28,14 @@ wasm users and a responsive maintainer.
       `operator/{eigen, self_adjoint_eigen, svd}`. Benefits wasm32, armv7,
       i686 — a genuine 32-bit-correctness fix, not a wasm accommodation.
       Submit upstream with a regression test on a 32-bit target.
+      *(prepared 2026-07-07 — patch + zero-`v0` regression tests in
+      `upstream/0001-*.patch`; awaiting Codeberg filing)*
 - [ ] A **wasm32 CI job**: build `--target wasm32-unknown-unknown` with
       `default-features = false, features = ["linalg"]` + a headless node
       smoke test (LU solve, hand-verified values), so wasm can't silently
       regress again.
+      *(prepared 2026-07-07 — `.woodpecker/wasm.yaml` + `faer-wasm-test`
+      crate in `upstream/0002-*.patch`; awaiting Codeberg filing)*
 - [ ] Open the conversation with the maintainer: wasm as a supported tier,
       referencing #222's existing demand.
 
