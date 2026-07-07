@@ -22,7 +22,14 @@ GitHub is a mirror). See ROADMAP.md; empirical basis in docs/.
 
 ## Quick start
 
-    git clone https://codeberg.org/sarah-quinones/faer-rs
-    cd faer-rs && git checkout <commit in patches/UPSTREAM-BASE.txt>
-    git apply ../patches/0001-fix-32bit-usize-shift.patch
-    cd ../smoke-test && cargo build --target wasm32-unknown-unknown --release
+The smoke test path-depends on **both** upstream clones sitting in the repo
+root (gitignored): `faer-rs/` and `pulp/`. Commits are pinned in
+`patches/UPSTREAM-BASE.txt`.
+
+    git clone https://github.com/sarah-quinones/faer-rs
+    git clone https://github.com/sarah-quinones/pulp
+    git -C faer-rs checkout <faer commit in patches/UPSTREAM-BASE.txt>
+    git -C pulp    checkout <pulp commit in patches/UPSTREAM-BASE.txt>
+    git -C faer-rs apply ../patches/0001-fix-32bit-usize-shift.patch
+    cd smoke-test && cargo build --target wasm32-unknown-unknown --release
+    node run.mjs
