@@ -32,9 +32,14 @@ the LinearAlgebra coverage matrix).
 
 ```sh
 cd smoke-test
-cargo build --target wasm32-unknown-unknown --release --features full
+cargo build --lib --target wasm32-unknown-unknown --release --features full
 node check.mjs   # exact values (matmul / LU / QR / SVD / EVD) + size budget
 ```
+
+(`--lib` matters: the `native` bin is host-only — building it for wasm is
+a duplicate-`panic_impl` error. Determinism cross-check:
+`cargo run --release --features full --bin native > native-bits.txt &&
+node determinism.mjs <wasm> native-bits.txt`.)
 
 Results were bit-identical between native x86-64 and wasm in the 2026-07
 verification — treat any cross-target difference as a bug, not noise. CI

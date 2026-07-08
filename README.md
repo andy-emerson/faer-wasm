@@ -47,8 +47,9 @@ root (gitignored): `faer-rs/` and `pulp/`. Commits are pinned in
     git -C faer-rs checkout <faer commit in patches/UPSTREAM-BASE.txt>
     git -C pulp    checkout <pulp commit in patches/UPSTREAM-BASE.txt>
     for p in patches/*.patch; do git -C faer-rs apply "../$p"; done
-    cd smoke-test && cargo build --target wasm32-unknown-unknown --release --features full
+    cd smoke-test && cargo build --lib --target wasm32-unknown-unknown --release --features full
     node check.mjs   # exact-value + size gate; run.mjs just prints
+    # (--lib: the `native` bin is host-only, for the determinism cross-check)
 
 Consumer-facing build recipe (features, sizes, SIMD, determinism):
 `docs/wasm.md`.
