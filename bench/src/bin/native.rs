@@ -3,7 +3,7 @@
 //   {"target":"native-o3","op":"matmul","n":128,"ns":123456.7}
 use std::time::Instant;
 
-fn time_op(f: extern "C" fn() -> f64, n: usize) -> f64 {
+fn time_op(f: impl Fn() -> f64, n: usize) -> f64 {
     let mut sink = 0.0f64;
     sink += f(); // warmup + compile
     let t0 = Instant::now();
@@ -37,8 +37,14 @@ fn main() {
             if n > max_n {
                 continue;
             }
-            let ns = time_op(f, n);
+            let ns = time_op(move || f(), n);
             println!(r#"{{"target":"{label}","op":"{name}","n":{n},"ns":{ns:.1}}}"#);
         }
+        // factor-only baselines with library-default blocking, for the
+        // tuning comparison (0 = default; mirrors tune.mjs)
+        let ns = time_op(|| bench_harness::run_lu_factor_tuned(0, 0), n);
+        println!(r#"{{"target":"{label}","op":"lu_factor","n":{n},"ns":{ns:.1}}}"#);
+        let ns = time_op(|| bench_harness::run_qr_factor_tuned(0, 0), n);
+        println!(r#"{{"target":"{label}","op":"qr_factor","n":{n},"ns":{ns:.1}}}"#);
     }
 }

@@ -92,6 +92,87 @@ pub extern "C" fn run_gen_evd() -> f64 {
     e[0].re
 }
 
+// --- blocking-parameter tuning probes (Phase 3) -------------------------
+// Factor-only entry points with caller-controlled blocking parameters, so
+// tune.mjs can sweep them on wasm. Passing 0 for a parameter selects the
+// library default, making the same export usable as the baseline.
+
+use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::linalg::lu::partial_pivoting::factor as lu_pp;
+use faer::linalg::qr::no_pivoting::factor as qr_np;
+use faer::{Auto, Par, Spec};
+
+#[no_mangle]
+pub extern "C" fn run_lu_factor_tuned(recursion_threshold: usize, block_size: usize) -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    let mut a = s.a.to_owned();
+    let mut perm = alloc::vec![0usize; n];
+    let mut perm_inv = alloc::vec![0usize; n];
+    let dflt: lu_pp::PartialPivLuParams = Auto::<f64>::auto();
+    let params = lu_pp::PartialPivLuParams {
+        recursion_threshold: if recursion_threshold == 0 {
+            dflt.recursion_threshold
+        } else {
+            recursion_threshold
+        },
+        block_size: if block_size == 0 { dflt.block_size } else { block_size },
+        ..dflt
+    };
+    let mut mem = MemBuffer::new(lu_pp::lu_in_place_scratch::<usize, f64>(
+        n,
+        n,
+        Par::Seq,
+        Spec::new(params),
+    ));
+    lu_pp::lu_in_place(
+        a.as_mut(),
+        &mut perm,
+        &mut perm_inv,
+        Par::Seq,
+        MemStack::new(&mut mem),
+        Spec::new(params),
+    );
+    a[(0, 0)]
+}
+
+#[no_mangle]
+pub extern "C" fn run_qr_factor_tuned(block_size: usize, blocking_threshold: usize) -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    let mut a = s.a.to_owned();
+    let bs = if block_size == 0 {
+        qr_np::recommended_block_size::<f64>(n, n)
+    } else {
+        block_size.min(n)
+    };
+    let dflt: qr_np::QrParams = Auto::<f64>::auto();
+    let params = qr_np::QrParams {
+        blocking_threshold: if blocking_threshold == 0 {
+            dflt.blocking_threshold
+        } else {
+            blocking_threshold
+        },
+        ..dflt
+    };
+    let mut h = Mat::<f64>::zeros(bs, n);
+    let mut mem = MemBuffer::new(qr_np::qr_in_place_scratch::<f64>(
+        n,
+        n,
+        bs,
+        Par::Seq,
+        Spec::new(params),
+    ));
+    qr_np::qr_in_place(
+        a.as_mut(),
+        h.as_mut(),
+        Par::Seq,
+        MemStack::new(&mut mem),
+        Spec::new(params),
+    );
+    a[(0, 0)]
+}
+
 #[cfg(target_arch = "wasm32")]
 mod wasm_shim {
     use core::alloc::{GlobalAlloc, Layout};

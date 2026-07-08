@@ -75,7 +75,7 @@ Already covered (no work): LU (partial+full pivot), LLT/pivoted-LLT/LDLT/
 Bunch-Kaufman, QR ± column pivoting, SVD, self-adjoint + general EVD,
 generalized EVD (QZ), triangular solve/inverse, full complex support.
 
-## Phase 3 — Wasm performance (started 2026-07-08)
+## Phase 3 — Wasm performance ✅ (2026-07-08; browser-run refinement open)
 
 - [x] A **benchmark harness** (`bench/`): wasm-vs-native per decomposition
       across sizes under node, results in `docs/benchmarks-2026-07.md`;
@@ -84,11 +84,14 @@ generalized EVD (QZ), triangular solve/inverse, full complex support.
 - [x] Relaxed-SIMD vs baseline deltas, published: ~11% geomean, up to
       ~25% on SVD/self-adjoint EVD at n≥128. Also measured: `opt-level`
       z→3 is ~1.75× overall — the biggest knob we control.
-- [ ] Single-thread **blocking-parameter tuning** for wasm — now the
-      highest-value open item: the 2026-07 data shows mid-size
-      factorization cliffs (LU 2.8×→~20× between n=32 and n=64; QR, EVD
-      similar) pointing at native-tuned thresholds misfiring on wasm.
-      See `docs/benchmarks-2026-07.md` finding 4.
+- [x] Single-thread **blocking-parameter tuning** for wasm — swept via
+      `bench/tune.mjs`, resolved: unblocked kernels win through n=256.
+      LU with `recursion_threshold ≥ n` → 1.25–1.5× native (was up to
+      9.6×); QR with Householder panel width 1 → ≈0.9× of faer's default
+      native time (was ~8–10× slower). Consumer guidance in
+      `docs/wasm.md` §7; tables in `docs/benchmarks-2026-07.md`.
+      Open residue: SVD/EVD internal stages (untuned, ~3.3×+) and
+      re-sweeping beyond n=256.
 - [x] **Determinism guarantee** enforced in CI: native vs wasm probe
       values compared bit-for-bit on every push (plain *and* relaxed-SIMD
       builds), via `smoke-test/src/bin/native.rs` + `determinism.mjs`.

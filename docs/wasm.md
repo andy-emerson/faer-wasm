@@ -115,3 +115,35 @@ On every push/PR: fetch both upstreams at the pinned commits → apply
 value checks and size budgets. If a faer re-pin or a dependency bump
 breaks the build, changes a result bit, or bloats a binary past budget,
 the gate fails.
+
+## 7. Blocking parameters on wasm (measured 2026-07-08)
+
+faer's default blocking thresholds are tuned for native caches and
+misfire badly on wasm — mid-size factorizations run up to ~10× slower
+than necessary. Measured fix (details + tables in
+`benchmarks-2026-07.md`): **prefer unblocked kernels through n≈256** by
+calling the low-level factor APIs with explicit parameters. The
+high-level solvers (`.partial_piv_lu()`, `.qr()`) use the untuned
+defaults, so hot paths should call:
+
+```rust
+use faer::linalg::lu::partial_pivoting::factor as lu;
+use faer::linalg::qr::no_pivoting::factor as qr;
+use faer::{Auto, Spec};
+
+// LU: stay on the unblocked kernel (1.25–1.5× native, vs 2.3–9.6× default)
+let params = lu::PartialPivLuParams {
+    recursion_threshold: n, // measured win up to n = 256
+    ..Auto::<f64>::auto()
+};
+lu::lu_in_place(a, &mut perm, &mut perm_inv, par, stack, Spec::new(params));
+
+// QR, n ≥ 64: classical Householder, panel width 1 (≈ native speed,
+// vs ~8–10× slower with the default panel width)
+let mut q_coeff = Mat::<f64>::zeros(1, n); // block size = row count = 1
+qr::qr_in_place(a, q_coeff.as_mut(), par, stack, Spec::new(Auto::<f64>::auto()));
+```
+
+Unmeasured beyond n=256 — blocked paths must win eventually; re-run
+`bench/tune.mjs` before extrapolating. SVD/EVD carry related (smaller)
+overheads via their internal bidiag/tridiag stages; untuned for now.

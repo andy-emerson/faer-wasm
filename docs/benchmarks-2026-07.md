@@ -132,3 +132,43 @@ node report.mjs native-o3.jsonl wasm-*.jsonl
 | wasm-z-relaxed | 8.59× |
 | wasm-o3-plain | 5.58× |
 | wasm-o3-relaxed | 4.96× |
+
+## Blocking-parameter tuning (finding 4 — resolved 2026-07-08)
+
+Finding 4's cliffs were parameter sweeps away from disappearing. Both LU
+and QR expose caller-side blocking knobs (`PartialPivLuParams`, the
+Householder panel width passed to `qr_in_place`); `bench/tune.mjs` swept
+them on the `o3-relaxed` wasm build (factor-only ops; min over sweep,
+~100 ms/cell). Native baselines use library-default blocking.
+
+| op | n | native (dflt) | wasm default | wasm tuned | tuned cfg | dflt → tuned | tuned vs native |
+| - | -: | -: | -: | -: | - | -: | -: |
+| LU | 32 | 11.0 µs | 34.7 µs | 14.9 µs | `rt=32` | 2.3× | 1.35× |
+| LU | 64 | 52.0 µs | 117.5 µs | 65.2 µs | `rt=128` | 1.8× | 1.25× |
+| LU | 128 | 322.5 µs | 3.10 ms | 481.5 µs | `rt=128` | 6.4× | 1.49× |
+| LU | 256 | 2.13 ms | 12.29 ms | 2.66 ms | `rt=256` | 4.6× | 1.25× |
+| QR | 32 | 51.6 µs | 118.2 µs | 87.1 µs | `bs=48` | 1.4× | 1.69× |
+| QR | 64 | 240.7 µs | 2.26 ms | 224.3 µs | `bs=1` | 10.1× | **0.93×** |
+| QR | 128 | 1.04 ms | 8.61 ms | 905.7 µs | `bs=1` | 9.5× | **0.87×** |
+| QR | 256 | 5.87 ms | 45.70 ms | 5.26 ms | `bs=1` | 8.7× | **0.90×** |
+
+(`rt` = `PartialPivLuParams::recursion_threshold`; `bs` = the Householder
+block size, i.e. `Q_coeff` row count passed to `qr_in_place`.)
+
+Diagnosis confirmed: the blocked/recursive paths are the pathology — their
+small-panel gemm updates carry heavy per-call overhead on wasm. **Unblocked
+kernels win through n=256**: LU with `recursion_threshold ≥ n` lands at
+1.25–1.5× native, and QR with panel width 1 (classical Householder) lands
+*at or below* faer's default native time. That last point suggests the
+defaults are tuned for much larger matrices even natively; on wasm the
+mismatch is simply catastrophic instead of mild.
+
+Consumer guidance (also in `docs/wasm.md`): on wasm, call the low-level
+factor APIs with `recursion_threshold ≥ n` (LU, measured up to 256) and
+Householder block size 1 (QR, n ≥ 64). The high-level solvers
+(`.partial_piv_lu()`, `.qr()`) use the untuned defaults. Beyond n=256 this
+is unmeasured — re-sweep before assuming; blocked paths must win
+eventually. SVD/EVD (3.3×+ untuned) route through their own
+internally-parameterized bidiagonalization/tridiagonalization and likely
+suffer the same class of overhead; squeezing them is recorded as a
+possible follow-up, not attempted here.
