@@ -1,0 +1,7 @@
+{
+  "_comment": "Byte budgets per smoke-test variant, ~10% above sizes measured 2026-07-08 (rustc 1.94.1: matmul 59207, lu 123751, full 447270, full-relaxed 440441). A budget failure means dependency or codegen creep - investigate before raising. Sizes are pre-wasm-opt, pre-gzip.",
+  "matmul": 66000,
+  "lu": 137000,
+  "full": 492000,
+  "full-relaxed": 485000
+}

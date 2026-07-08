@@ -50,12 +50,25 @@ jobs:
         with:
           node-version: 22
 
-      - name: Build the wasm smoke test (full suite)
-        working-directory: smoke-test
-        run: cargo build --target wasm32-unknown-unknown --release --features full
-
-      - name: Run under node, check hand-verified values exactly
+      - name: Build all four variants
         working-directory: smoke-test
         run: |
-          node check.mjs
-          ls -la target/wasm32-unknown-unknown/release/consumer.wasm
+          set -eux
+          W=target/wasm32-unknown-unknown/release/consumer.wasm
+          cargo build --target wasm32-unknown-unknown --release
+          cp "$W" matmul.wasm
+          cargo build --target wasm32-unknown-unknown --release --features lu
+          cp "$W" lu.wasm
+          cargo build --target wasm32-unknown-unknown --release --features full
+          cp "$W" full.wasm
+          RUSTFLAGS='-C target-feature=+simd128,+relaxed-simd' \
+            cargo build --target wasm32-unknown-unknown --release --features full
+          cp "$W" full-relaxed.wasm
+
+      - name: Check hand-verified values (exact) and size budgets
+        working-directory: smoke-test
+        run: |
+          set -eux
+          for v in matmul lu full full-relaxed; do
+            node check.mjs "$v.wasm" "$v"
+          done

@@ -23,6 +23,9 @@ Empirical basis in docs/.
   regression tests + wasm CI job, as `git am`-able patches with PR/issue
   text) that was prepared and then deliberately not submitted. Kept
   because the patches double as our own regression tests; don't extend it.
+- `docs/wasm.md` — **the consumer recipe**: cargo setup, features that
+  work (and `rayon`, which doesn't), the `no_std` zero-import pattern,
+  sizes + budgets, the relaxed-SIMD (FMA) route, determinism guarantee.
 - `docs/research-faer-wasm-2026-07.md` — the verification research:
   measured sizes (51 KiB matmul → ~396 KiB full suite), pulp simd128 status
   (already complete upstream), LinearAlgebra coverage matrix.

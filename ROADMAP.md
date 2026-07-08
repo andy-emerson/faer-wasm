@@ -43,17 +43,18 @@ release doesn't need them. New capability is built *alongside* faer
   the pinned base. If an adopted release builds on 32-bit without our
   patch, delete the patch and note it here.
 
-## Phase 1 — Wasm consumer ergonomics
+## Phase 1 — Wasm consumer ergonomics ✅ (2026-07-08)
 
-- [ ] A documented **wasm recipe** (`docs/wasm.md` in this repo): feature
-      set, `panic = "abort"`, `opt-level = "z"` + fat LTO, expected sizes
-      per decomposition (the measured 51 KiB → 396 KiB table), the `no_std`
-      path, and the determinism note (bit-identical to native).
-- [ ] **Relaxed-SIMD route documented**: consumers reach pulp's
-      `RelaxedSimd` via feature unification (verified working). FMA via
-      `relaxed_madd` is the single biggest wasm perf lever (+~10% size).
-- [ ] **Size regression tracking** in this repo's CI: the per-decomposition
-      wasm sizes as a checked budget, so dependency creep is caught early.
+- [x] A documented **wasm recipe** (`docs/wasm.md`): feature set, build
+      profile, per-decomposition sizes, the `no_std` zero-import path, and
+      the determinism note (bit-identical to native).
+- [x] **Relaxed-SIMD route documented** (`docs/wasm.md` §4) and built in
+      CI on every push: pulp `relaxed-simd` + `-C target-feature=
+      +simd128,+relaxed-simd`; probe values bit-identical to the plain
+      build.
+- [x] **Size regression tracking** in CI: all four variants built per
+      push, checked against `smoke-test/size-budgets.json` (~10% over
+      2026-07-08 measured sizes: 59,207 / 123,751 / 447,270 / 440,441 B).
 
 ## Phase 2 — Coverage growth (the LAPACK-parity tail)
 
