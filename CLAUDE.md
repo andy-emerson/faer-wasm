@@ -54,7 +54,13 @@ test and six stale claims.)
 
 - The upstream clones live at `faer-rs/` and `pulp/` in the repo root
   (gitignored — never commit them). Pin them to the commits in
-  `patches/UPSTREAM-BASE.txt` and apply `patches/*.patch` to `faer-rs/`.
+  `patches/UPSTREAM-BASE.txt` and apply `patches/*.patch` to `faer-rs/`
+  (0001: the 4-line 32-bit fix; 0002: 6 visibility-only lines exposing
+  the Schur kernels — both behavior-neutral, both dropped when upstream
+  makes them unnecessary).
+- `schur/` is the first Phase 2 companion crate (`faer-schur`: Schur +
+  eigenvalue reordering over faer's public API). Its gate:
+  `cd schur && cargo test --release` (CI runs it too).
 - Install the target if missing: `rustup target add wasm32-unknown-unknown`.
 
 ## Verification (the gate for any change)

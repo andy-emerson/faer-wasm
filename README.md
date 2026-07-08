@@ -10,13 +10,23 @@ Empirical basis in docs/.
 
 ## Contents
 
-- `ROADMAP.md` — the phased plan. Phases 0–1 (the carried fix, CI gate,
-  consumer recipe, size budgets) are done; next are the LAPACK-parity
-  tail and the benchmark harness.
-- `patches/0001-fix-32bit-usize-shift.patch` — the 4-line fix that makes
-  faer build on wasm32 (and armv7/i686): `(n >> 32)` on 32-bit `usize` →
-  `((n as u64) >> 32) as u32`, in `operator/{eigen,self_adjoint_eigen,svd}`.
-  Base commit in `patches/UPSTREAM-BASE.txt`.
+- `ROADMAP.md` — the phased plan. Phases 0, 1, 3 (the carried fix, CI
+  gate, consumer recipe, size budgets, benchmarks + tuning) are done;
+  Phase 2 (the LAPACK-parity tail) is underway — Schur + reordering
+  landed first.
+- `patches/` — the carried patch set (base commit in
+  `patches/UPSTREAM-BASE.txt`):
+  `0001-fix-32bit-usize-shift.patch`, the 4-line fix that makes faer
+  build on wasm32 (and armv7/i686): `(n >> 32)` on 32-bit `usize` →
+  `((n as u64) >> 32) as u32`, in `operator/{eigen,self_adjoint_eigen,svd}`;
+  and `0002-expose-schur-kernels.patch`, 6 visibility-only lines
+  (`pub(crate)` → `pub`, no behavior change) exposing the Schur kernels
+  faer already has, so `schur/` can drive them from outside.
+- `schur/` — **`faer-schur`**, the first Phase 2 companion crate:
+  real + complex Schur decomposition (`gees`-shaped) and eigenvalue
+  reordering (`trexc`/`trsen`-shaped) over faer's public API. `no_std`,
+  wasm-gated in CI, accuracy-tested against backward error /
+  orthogonality / faer's own EVD (`schur/tests/accuracy.rs`).
 - `smoke-test/` — a zero-import `no_std` consumer crate that builds to
   `wasm32-unknown-unknown` (with the patch applied to a local faer checkout)
   and runs matmul / LU / QR / SVD / EVD under node, verified bit-identical
@@ -48,12 +58,14 @@ their evidence.
 | faer + carried patch builds for wasm32 (`linalg`, `linalg,std`) | tested | CI-enforced | wasm gate, every push |
 | patches apply cleanly on the pinned base | tested | CI-enforced | gate does clone → pin → apply |
 | full dense suite runs under node, exact hand-verified values | tested | CI-enforced | `check.mjs`, 4 build variants |
-| native ↔ wasm bit-identical, incl. relaxed-SIMD build | tested | CI-enforced | `determinism.mjs` (3 probes spanning matmul/LU/QR/SVD/EVD — not all inputs) |
+| native ↔ wasm bit-identical, incl. relaxed-SIMD build | tested | CI-enforced | `determinism.mjs` (3 probes spanning matmul/LU/QR/SVD/EVD — not all inputs; known NOT to extend to 8×8 Schur raw doubles, see docs/wasm.md §5) |
 | `.wasm` sizes 59→447 KB, within budgets | tested | CI-enforced | `size-budgets.json` |
 | relaxed-SIMD emits real FMA (`relaxed_madd`) | observed | by-hand | 2026-07 disassembly counts |
 | `rayon` cannot build on wasm32 | observed | by-hand | build probe at the pin |
 | perf: matmul 1.9× native; opt-level z→3 ≈ 1.75×; relaxed-SIMD ≈ +11% | observed | scripted | `bench/`, min-of-2 reps, shared box |
 | tuning: unblocked kernels win ≤ n=256 (LU 1.25–1.5× native, QR ≈ 0.9× native-default) | observed | scripted | `bench/tune.mjs` sweep |
+| Schur (f64+c64) + reordering correct: backward error ~1e-15, orthogonality, eigenvalues match faer EVD, reorder invariants; n ≤ 150 incl. blocked/AED path | tested | CI-enforced | `schur/tests/accuracy.rs` + wasm property probes in all full variants |
+| c64 compute broken under `+relaxed-simd` at this pin (incl. faer's own `.eigenvalues()`); f64 + c64 matmul unaffected | tested | CI-enforced | isolated 2026-07-08 (Hessenberg stage, ‖·‖²≈186); `check.mjs` canary asserts the broken state |
 | shelved upstream patches recreate the branch byte-identically | observed | by-hand | `git am` round-trip, 2026-07-08 |
 | SVD/EVD wasm overhead is untuned (~3.3×+) | observed | scripted | bench tables |
 | blocked paths must win beyond some n | stated | — | untested past n=256 |

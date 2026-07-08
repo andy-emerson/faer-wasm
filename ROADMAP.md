@@ -56,17 +56,39 @@ release doesn't need them. New capability is built *alongside* faer
       push, checked against `smoke-test/size-budgets.json` (~10% over
       2026-07-08 measured sizes: 59,207 / 123,751 / 447,270 / 440,441 B).
 
-## Phase 2 — Coverage growth (the LAPACK-parity tail)
+## Phase 2 — Coverage growth (the LAPACK-parity tail) — underway
 
 Prioritized by what a LAPACK-replacing consumer hits first; each item is
 built **alongside faer** (a companion crate or the consumer's shim, over
-faer's public low-level modules) with accuracy tests against LAPACK
-reference values. Verified-missing today:
+faer's public low-level modules) with accuracy tests. Status:
 
-- [ ] **Schur decomposition** (`gees`-equivalent) + **eigenvalue reordering**
-      (`trexc`/`trsen`) — the largest gap; unlocks matrix functions
-      (`exp(A)`, `log(A)`) for every consumer.
-- [ ] **Sylvester solver** (`trsyl`) — pairs with Schur.
+- [x] **Schur decomposition** (`gees`-equivalent, f64 + c64) +
+      **eigenvalue reordering** (`trexc`/`trsen`-shaped) — landed
+      2026-07-08 as the `schur/` companion crate (`faer-schur`), driving
+      faer's own internal kernels through
+      `patches/0002-expose-schur-kernels.patch` (6 visibility-only
+      lines; engineer's call, architect can veto: the alternative was
+      porting ~500 lines of swap/QR-iteration internals into the
+      companion crate). Accuracy CI-tested (backward error ~1e-15,
+      orthogonality, eigenvalue agreement with faer's EVD, reorder
+      invariants, n ≤ 150 covering the blocked/AED path); wasm-gated via
+      integer property probes in the full variants. Findings along the
+      way: (a) faer's blocked multishift leaves workspace junk below the
+      subdiagonal — our driver zeroes it; (b) Schur raw doubles are NOT
+      bit-identical across targets at 8×8 (docs/wasm.md §5) — the
+      determinism claim stays scoped to the fixed probes; (c) the
+      c64×relaxed-simd bug below.
+- [ ] **Root-cause the c64 × relaxed-SIMD miscomputation** (found
+      2026-07-08 by the Schur gate): with `+relaxed-simd` baked in,
+      faer's complex Hessenberg — and consequently everything complex,
+      including faer's own `.eigenvalues()` on c64 input — returns
+      grossly wrong results at the current pin. Real f64 paths and c64
+      matmul are fine. CI asserts the broken state (canary in
+      `check.mjs`), docs/wasm.md §4 carries the consumer caveat
+      (relaxed = real-only). Open: dig into faer/pulp's relaxed complex
+      kernels (carry a fix?) vs wait for an upstream release that fixes
+      it — architect input wanted on how much to invest.
+- [ ] **Sylvester solver** (`trsyl`) — pairs with Schur; next in line.
 - [ ] **LQ adapter** (thin; QR-of-transpose plumbing).
 - [ ] `geevx`-style balancing / condition-number extras.
 - [ ] Generalized SVD (`ggsvd3`) — lowest priority; rare call sites.

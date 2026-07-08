@@ -1,8 +1,12 @@
 // Cross-target determinism gate:
 //   node determinism.mjs <wasm-path> <native-output-file>
 // The native file comes from `cargo run --release --features full --bin native`
-// and holds name=<16-hex-digit f64 bits> lines. The same three probes are run
-// in the wasm module and compared bit-for-bit. Any difference fails.
+// and holds name=<16-hex-digit f64 bits> lines. Every probe the native bin
+// printed is re-run in the wasm module and compared bit-for-bit; any
+// difference fails. (schur_probe is an integer-valued property score — the
+// raw Schur doubles are NOT cross-target bit-identical at 8x8, see
+// smoke-test/src/lib.rs — so bit-comparing the score is exactly as strong as
+// the gate can honestly be for that pipeline.)
 import { readFileSync } from 'node:fs';
 
 const [wasmPath, nativePath] = process.argv.slice(2);
@@ -29,7 +33,7 @@ const bitsOf = (x) => {
 };
 
 let failed = false;
-for (const name of ['matmul_trace', 'lu_solve_sum', 'qr_svd_evd_probe']) {
+for (const name of Object.keys(native)) {
 	if (typeof e[name] !== 'function' || !native[name]) {
 		console.log(`${name}: MISSING (wasm export or native line)`);
 		failed = true;

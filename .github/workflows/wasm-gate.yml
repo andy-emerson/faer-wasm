@@ -47,10 +47,15 @@ jobs:
           workspaces: |
             smoke-test
             bench
+            schur
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: faer-schur accuracy tests (native)
+        working-directory: schur
+        run: cargo test --release
 
       - name: Build all four variants
         working-directory: smoke-test

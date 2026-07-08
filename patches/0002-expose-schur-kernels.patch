@@ -1,0 +1,57 @@
+diff --git a/faer/src/linalg/evd/schur/complex_schur.rs b/faer/src/linalg/evd/schur/complex_schur.rs
+index 7849a11..2dd47bd 100644
+--- a/faer/src/linalg/evd/schur/complex_schur.rs
++++ b/faer/src/linalg/evd/schur/complex_schur.rs
+@@ -566,7 +566,7 @@ fn aggressive_early_deflation<T: ComplexField>(
+ 	}
+ 	(ns, nd)
+ }
+-fn schur_move<T: ComplexField>(
++pub fn schur_move<T: ComplexField>(
+ 	mut a: MatMut<'_, T>,
+ 	mut q: Option<MatMut<'_, T>>,
+ 	ifst: usize,
+@@ -598,7 +598,7 @@ fn schur_move<T: ComplexField>(
+ 	}
+ 	0
+ }
+-pub(crate) fn schur_swap<T: ComplexField>(
++pub fn schur_swap<T: ComplexField>(
+ 	mut a: MatMut<'_, T>,
+ 	q: Option<MatMut<'_, T>>,
+ 	j0: usize,
+diff --git a/faer/src/linalg/evd/schur/mod.rs b/faer/src/linalg/evd/schur/mod.rs
+index ed7653a..39a55d6 100644
+--- a/faer/src/linalg/evd/schur/mod.rs
++++ b/faer/src/linalg/evd/schur/mod.rs
+@@ -1,6 +1,6 @@
+ use super::*;
+-pub(crate) mod complex_schur;
+-pub(crate) mod real_schur;
++pub mod complex_schur;
++pub mod real_schur;
+ #[derive(Clone, Copy, Debug)]
+ pub struct SchurParams {
+ 	/// function that returns the number of shifts to use for a given matrix
+diff --git a/faer/src/linalg/evd/schur/real_schur.rs b/faer/src/linalg/evd/schur/real_schur.rs
+index 9e157f0..ef9c480 100644
+--- a/faer/src/linalg/evd/schur/real_schur.rs
++++ b/faer/src/linalg/evd/schur/real_schur.rs
+@@ -317,7 +317,7 @@ fn lahqr_shiftcolumn<T: RealField>(
+ 		}
+ 	}
+ }
+-fn schur_move<T: RealField>(
++pub fn schur_move<T: RealField>(
+ 	mut a: MatMut<T>,
+ 	mut q: Option<MatMut<T>>,
+ 	mut ifst: usize,
+@@ -677,7 +677,7 @@ pub(crate) fn schur_swap_22<T: RealField>(
+ 	a[(j3, j1)] = zero();
+ 	0
+ }
+-pub(crate) fn schur_swap<T: RealField>(
++pub fn schur_swap<T: RealField>(
+ 	mut a: MatMut<T>,
+ 	mut q: Option<MatMut<T>>,
+ 	j0: usize,

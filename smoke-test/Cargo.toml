@@ -12,11 +12,12 @@ required-features = ["full"]
 
 [dependencies]
 faer = { path = "../faer-rs/faer", default-features = false, features = ["linalg"] }
+faer-schur = { path = "../schur", optional = true }
 pulp = { path = "../pulp/pulp", default-features = false, features = ["relaxed-simd"] }
 
 [features]
 lu = []
-full = []
+full = ["dep:faer-schur"]
 
 [profile.release]
 opt-level = "z"

@@ -1,7 +1,1 @@
-{
-  "_comment": "Byte budgets per smoke-test variant, ~10% above sizes measured 2026-07-08 (rustc 1.94.1: matmul 59207, lu 123751, full 447270, full-relaxed 440441). A budget failure means dependency or codegen creep - investigate before raising. Sizes are pre-wasm-opt, pre-gzip.",
-  "matmul": 66000,
-  "lu": 137000,
-  "full": 492000,
-  "full-relaxed": 485000
-}
+{"_comment": "Byte budgets per smoke-test variant, ~10% above sizes measured 2026-07-08 (rustc 1.94.1: matmul 59207, lu 123751, full 738486, full-relaxed 726178). full/full-relaxed grew 2026-07-08 when faer-schur landed: real Schur + reordering is ~+26 KB; the c64 complex-Schur stack is ~+260 KB of newly monomorphized code (no complex-input kernels were in the binary before). A budget failure means dependency or codegen creep - investigate before raising. Sizes are pre-wasm-opt, pre-gzip.", "matmul": 66000, "lu": 137000, "full": 806000, "full-relaxed": 793000}

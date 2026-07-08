@@ -1,0 +1,18 @@
+[package]
+name = "faer-schur"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Companion crate to the carried faer: Schur decomposition (gees-equivalent)
+# and eigenvalue reordering (trexc/trsen-equivalent) over faer's public API.
+# Requires patches/0002-expose-schur-kernels.patch (visibility-only) on the
+# pinned faer checkout at ../faer-rs.
+
+[dependencies]
+faer = { path = "../faer-rs/faer", default-features = false, features = ["linalg"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
