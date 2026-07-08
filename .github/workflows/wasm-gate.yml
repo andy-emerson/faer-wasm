@@ -1,0 +1,61 @@
+name: wasm gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  wasm-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read upstream pins
+        id: pins
+        run: |
+          echo "faer=$(grep -oE '[0-9a-f]{40}' patches/UPSTREAM-BASE.txt | sed -n 1p)" >> "$GITHUB_OUTPUT"
+          echo "pulp=$(grep -oE '[0-9a-f]{40}' patches/UPSTREAM-BASE.txt | sed -n 2p)" >> "$GITHUB_OUTPUT"
+
+      - name: Clone upstreams at the pinned commits
+        run: |
+          set -eux
+          clone_pinned () {
+            git init -q "$1"
+            git -C "$1" remote add origin "https://github.com/sarah-quinones/$1"
+            git -C "$1" fetch --depth 1 -q origin "$2"
+            git -C "$1" checkout -q FETCH_HEAD
+          }
+          clone_pinned faer-rs "${{ steps.pins.outputs.faer }}"
+          clone_pinned pulp    "${{ steps.pins.outputs.pulp }}"
+
+      - name: Apply carried patches
+        run: |
+          set -eux
+          for p in patches/*.patch; do
+            git -C faer-rs apply "../$p"
+          done
+          git -C faer-rs diff --stat
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: smoke-test
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the wasm smoke test (full suite)
+        working-directory: smoke-test
+        run: cargo build --target wasm32-unknown-unknown --release --features full
+
+      - name: Run under node, check hand-verified values exactly
+        working-directory: smoke-test
+        run: |
+          node check.mjs
+          ls -la target/wasm32-unknown-unknown/release/consumer.wasm

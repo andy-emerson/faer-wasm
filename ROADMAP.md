@@ -32,9 +32,11 @@ release doesn't need them. New capability is built *alongside* faer
       archived `upstream/0001-*.patch` (they double as our own tests).
 - [x] Verification gate green (2026-07-07): wasm build + node smoke test
       reproduce the reference values exactly, bit-identical to native.
-- [ ] **CI in this repo** (GitHub Actions): clone → pin → patch → build
-      `wasm32-unknown-unknown` → node smoke test, so a faer bump or patch
-      drift can't silently break us. (Replaces the shelved upstream CI job.)
+- [x] **CI in this repo** (GitHub Actions): clone → pin → patch → build
+      `wasm32-unknown-unknown` → node smoke test with exact-value checks
+      (`.github/workflows/wasm-gate.yml` + `smoke-test/check.mjs`), so a
+      faer bump or patch drift can't silently break us. (Replaces the
+      shelved upstream CI job.)
 - Recurring: **evaluate** each faer release — adopt (re-pin, re-apply,
   re-run the gate) only when it advances us; slight accommodations to
   upstream changes are fine; if upstream deviates from our needs, stay on
