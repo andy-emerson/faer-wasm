@@ -222,28 +222,33 @@ pub fn lu_solve_in_place(a: MatRef<'_, f64>, piv: &[usize], b: &mut [f64]) {
 }
 
 /// Base-case width for [`lu_factor_recursive_in_place`] — below this the
-/// recursion switches to flat right-looking loops (ReLAPACK's crossover
-/// practice). **Swept on the GitHub runner over 3 rounds 2026-07-09**
-/// (`lu-tune.yml`; a first single-round sweep was distrusted and redone).
-/// Honest finding: on 2-lane wasm the recursion barely earns its keep —
-/// pure-flat wins outright at n=192/256/384 and ties within 0.1% at n=512,
-/// because the flat simd128 rank-1 panel already runs near the rate its
-/// gemm-fed replacement could. `384` is the value that is optimal-or-tied
-/// at *every* swept size: pure-flat through n=384 (fixes a 7.6% loss the
-/// earlier 256 had at n=384), one split above. Narrow crossovers (≤64)
-/// lose badly (skinny gemms). The recursion is kept for the n>512 regime
-/// the sweep can't reach, where gemm should eventually pay off.
-pub const RECOMMENDED_CROSSOVER: usize = 384;
+/// recursion switches to flat right-looking loops. **Set to `usize::MAX`:
+/// the default never recurses.**
+///
+/// The recursion was measured on the GitHub runner (the reference machine
+/// for the scipy comparison) over 3 rounds plus a dedicated large-n probe
+/// to n=1024 (`lu-largen.mjs`). Verdict: **pure-flat wins at every size
+/// 64–1024** — a tie at n=512 and 6.5–8.5% *ahead* of the best recursion
+/// at 640/768/1024, with no sign of the margin closing. On 2-lane wasm the
+/// flat simd128 rank-1 panel runs so close to gemm rate that routing flops
+/// into gemm never pays, and the skinny-gemm penalty makes it lose. (A dev
+/// box showed recursion winning at large n — a machine-specific cache
+/// quirk that did NOT reproduce on the runner; kept as the cautionary
+/// reason we tune on the runner, not locally.) The recursion machinery is
+/// retained for explicit-`crossover` opt-in on a machine that profiles
+/// differently, but is off by default.
+pub const RECOMMENDED_CROSSOVER: usize = usize::MAX;
 
 /// Recursive LU (`dgetrf2`/Toledo shape) — the top-ranked technique from
 /// docs/research-lu-wasm-2026-07.md: splitting at w/2 casts the panel's
 /// memory-bound rank-1 work into trsm + gemm at growing ranks; the
-/// `crossover`-wide base case runs the flat simd128 loops. Measured on the
-/// **runner** 2026-07-09 (`lu-tune.yml`, tuned defaults): beats the blocked
-/// [`lu_factor_in_place`] by 8–19% (n=192–512) and reaches scipy parity at
-/// n=256. The tuned shape recurses *little* — one split at n=512, none at
-/// n≤256 — because on 2-lane wasm the flat simd128 panel already runs near
-/// the rate a skinny gemm could, so extra recursion only adds call overhead.
+/// `crossover`-wide base case runs the flat simd128 loops. **By default it
+/// does not recurse at all** ([`RECOMMENDED_CROSSOVER`] = `usize::MAX`): the
+/// runner large-n probe (to n=1024) showed the pure-flat panel winning at
+/// every size, so the default is that flat panel — the fastest wasm LU
+/// measured, at scipy parity around n=256. Pass an explicit finite
+/// `crossover` to opt into recursion (loses on the reference runner; may
+/// help a machine with a different cache/bandwidth balance).
 ///
 /// Base-case width for the recursive unit-lower trsm (`trsm_rec`) — below
 /// this the trsm runs flat simd128 substitution instead of splitting into
@@ -275,13 +280,10 @@ pub fn lu_factor_recursive_in_place_tuned(
 	assert!(a.ncols() == n, "square only for now");
 	assert!(piv.len() >= n);
 	assert!(a.row_stride() == 1, "column-major with unit row stride required");
-	// same rule as the blocked driver: flat loops alone win through n=128,
-	// recursion pays only once the gemm ranks grow past that
-	let crossover = if crossover == 0 {
-		if n <= 128 { n.max(1) } else { RECOMMENDED_CROSSOVER }
-	} else {
-		crossover
-	};
+	// default (crossover == 0) never recurses — pure-flat won at every size
+	// 64–1024 on the runner (see RECOMMENDED_CROSSOVER). An explicit finite
+	// crossover re-enables recursion for machines that profile differently.
+	let crossover = if crossover == 0 { RECOMMENDED_CROSSOVER } else { crossover };
 	let trsm_base = if trsm_base == 0 { RECOMMENDED_TRSM_BASE } else { trsm_base };
 	let cs = a.col_stride() as usize;
 	unsafe {

@@ -228,15 +228,18 @@ alongside the wasm gate.
 - [ ] LU residual at n≥256 (0.8–0.9× vs scipy): next levers per the
       research plan are relaxed-FMA base kernels and packing the panel
       columns; diminishing returns vs the eigen flank.
-- [x] **Tuned the recursive LU on the runner** (`lu-tune.yml`, Runs 5–6):
-      first a single-round sweep (crossover 256 / trsm_base 128, n=256
-      scipy parity), then a **3-round re-sweep** (architect distrusted
-      the single run) that showed the recursion is *marginal* on wasm —
-      pure-flat wins outright at n≤384 and ties within 0.1% at n=512, so
-      the flat simd128 panel is the real engine. Re-baked crossover 384 /
-      trsm_base 256 (optimal-or-tied at every swept size; fixes a 7.6%
-      loss the 256 pick had at n=384). Gated (`gate.mjs`: recursive ≤
-      blocked ≤ faer-tuned at n=256). Docs: benchmarks Runs 5–6.
+- [x] **Tuned then *removed* the recursion from the LU default**
+      (`lu-tune.yml` + `lu-largen.mjs`, Runs 5–7): a single-round sweep
+      (crossover 256), distrusted by the architect, was redone over 3
+      rounds (showed recursion marginal), then a dedicated large-n probe
+      to n=1024 settled it: **pure-flat wins at every size 64–1024 on the
+      runner** (tie at 512, flat 6.5–8.5% ahead at 640–1024). A dev box
+      had shown recursion winning at large n — a cache quirk that didn't
+      reproduce on the runner. So `RECOMMENDED_CROSSOVER = usize::MAX`:
+      the default LU is now the pure-flat simd128 panel, no recursion.
+      The machinery stays for explicit opt-in. The LU story simplified to
+      "lean flat panel, scipy parity ~n=256" with no recursion claim to
+      defend. Gated (`gate.mjs`). Docs: benchmarks Runs 5–7.
 
 ## Considered option — WebGPU for the large-n tail (architect Q, 2026-07-09; deferred)
 

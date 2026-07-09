@@ -259,6 +259,33 @@ valid, not the absolutes against earlier runs.
 - The projection ("large QR lead") held and then some. Gated at
   `wk ≤ 0.8×faer-tuned` so it can't silently regress.
 
+## Run 7 — recursion verdict: removed from the LU default (2026-07-09, run 29051443596)
+
+Follow-up to the architect's doubt ("recursion is active exactly where we
+lose to scipy — does it belong at all?"). A dedicated large-n probe
+(`lu-largen.mjs`, to n=1024) settled it on the runner:
+
+| n | pure-flat | best recursion | verdict |
+| -: | -: | -: | -: |
+| 512 | 23.36 ms | 23.29 ms | tie |
+| 640 | 33.35 ms | 36.18 ms | **flat wins 8.5%** |
+| 768 | 58.11 ms | 61.90 ms | **flat wins 6.5%** |
+| 1024 | 155.78 ms | 168.61 ms | **flat wins 8.2%** |
+
+**Pure-flat wins at every size 64–1024 on the runner; recursion never
+wins, and the gap does not close toward 1024.** (A dev box had shown
+recursion winning 5–10% at large n — a machine-specific cache quirk that
+did *not* reproduce on the reference runner. Exactly why tuning lives on
+the runner, not locally.) So `RECOMMENDED_CROSSOVER` was set to
+`usize::MAX`: **the default LU never recurses** — it is the pure-flat
+unblocked simd128 panel, the fastest wasm LU measured at every size. The
+recursion machinery stays in the tree for explicit-`crossover` opt-in on a
+differently-balanced machine, but is off by default. Net: the LU story is
+now simply "a lean flat simd128 panel, at scipy parity around n=256" — no
+recursion claim to defend.
+
+## LU re-tune history — the recursion never earned its keep
+
 **LU re-tune — the recursion barely earns its keep (honest):** the 3-round
 sweep (top-3 per size printed) shows pure-flat winning outright at
 n=192/256/384 and tying within 0.1% at n=512 — the flat simd128 panel is
