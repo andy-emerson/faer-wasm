@@ -202,16 +202,24 @@ alongside the wasm gate.
       skinny gemms, both concede blocking loses at small n. The durable
       lever is the block-apply `(I−V T Vᵀ)·C` kernel, whose real payoff
       is Hessenberg (the eigen flank), not standalone QR.
-- [ ] **Package panel-width-1 QR as the consumer default**
-      (`recommended_qr_params()`, the `faer-schur` treatment) — the
-      cheap confirmed win; `.qr()` callers currently fall into faer's
-      native default, not the winning path. [Re-scoped from the original
-      "blocked WY driver", which the QR research *contraindicated*:
-      blocking/recursion don't beat unblocked at n ≤ 512.]
+- [x] **Wasm-shaped unblocked QR kernel** (`kernels/src/qr.rs`, Run 6):
+      the research's positive answer, built and measured. Fully unblocked
+      dgeqr2-shape — fused `dlarfg` + `dlarf` (dot + axpy) in flat
+      simd128, no compact-WY/T-matrix/gemm. **Beats scipy 2.5–3.0× at
+      every size n=64–512** and faer's own `block_size=1` path 2–3.5× —
+      the first faer factorization to beat scipy decisively across the
+      whole range. Correctness-gated (‖A−QR‖, ‖QᵀQ−I‖, |R| vs faer);
+      efficiency-gated (`wk ≤ 0.8×faer-tuned`). This *is* the "package
+      width-1 as default" win and then some — a naive consumer would get
+      `qr_r_wk`'s speed, not faer's native default.
 - [ ] **Wasm-shaped block-apply kernel `(I−V T Vᵀ)·C` in
       `faer-wasm-kernels`** — coarse-only (no recursion, no skinny-gemm
       base case; the LU lesson), routed into faer gemm. Buys little on
       already-won QR; built as the reusable inner loop of Hessenberg.
+      Note the QR result reinforces the LU lesson: on 2-lane wasm the
+      flat simd128 loop is so close to gemm rate that routing into gemm
+      barely helps below ~512 — the block-apply's value is Hessenberg
+      structure reuse, not raw QR speed.
 - [ ] **Wasm-shaped Hessenberg reduction** (`dlahr2`-shape over the
       block-apply above) — the actual eigen-flank lever; where the
       2.5–3× eigvals/schur gaps live. Larger job, scope after block-apply.
@@ -220,13 +228,15 @@ alongside the wasm gate.
 - [ ] LU residual at n≥256 (0.8–0.9× vs scipy): next levers per the
       research plan are relaxed-FMA base kernels and packing the panel
       columns; diminishing returns vs the eigen flank.
-- [x] **Tuned the recursive LU on the runner** (`lu-tune.yml`, Run 5):
-      dev-box sweeps had mis-picked toward *more* recursion; the runner
-      wants crossover 256 / trsm_base 128 (wider flat base cases). Baked
-      + gated (`gate.mjs`: recursive ≤ blocked ≤ faer-tuned at n=256).
-      Result: n=256 reached **scipy parity** (2.49 ms, was 0.9×), 24%
-      over the blocked driver; n=512 unchanged (~0.8×, sweep predicted
-      only ~5% and variance covers it). Docs: benchmarks Run 5.
+- [x] **Tuned the recursive LU on the runner** (`lu-tune.yml`, Runs 5–6):
+      first a single-round sweep (crossover 256 / trsm_base 128, n=256
+      scipy parity), then a **3-round re-sweep** (architect distrusted
+      the single run) that showed the recursion is *marginal* on wasm —
+      pure-flat wins outright at n≤384 and ties within 0.1% at n=512, so
+      the flat simd128 panel is the real engine. Re-baked crossover 384 /
+      trsm_base 256 (optimal-or-tied at every swept size; fixes a 7.6%
+      loss the 256 pick had at n=384). Gated (`gate.mjs`: recursive ≤
+      blocked ≤ faer-tuned at n=256). Docs: benchmarks Runs 5–6.
 
 ## Considered option — WebGPU for the large-n tail (architect Q, 2026-07-09; deferred)
 

@@ -223,14 +223,17 @@ pub fn lu_solve_in_place(a: MatRef<'_, f64>, piv: &[usize], b: &mut [f64]) {
 
 /// Base-case width for [`lu_factor_recursive_in_place`] — below this the
 /// recursion switches to flat right-looking loops (ReLAPACK's crossover
-/// practice). **Swept on the GitHub runner 2026-07-09** (`lu-tune.yml`,
-/// the machine the pyodide comparison runs on — dev-box sweeps had
-/// mis-picked 128): the runner wants a *wider* base case and *less*
-/// recursion. co=256 wins at n=256 (pure flat, no recursion — matches
-/// scipy) through n=512 (one split to 256-wide bases + gemm), beating the
-/// old co=128 by 5–16%. Narrow crossovers (≤64) lose badly: skinny gemms
-/// cost more than flat simd128 loops on 2-lane wasm.
-pub const RECOMMENDED_CROSSOVER: usize = 256;
+/// practice). **Swept on the GitHub runner over 3 rounds 2026-07-09**
+/// (`lu-tune.yml`; a first single-round sweep was distrusted and redone).
+/// Honest finding: on 2-lane wasm the recursion barely earns its keep —
+/// pure-flat wins outright at n=192/256/384 and ties within 0.1% at n=512,
+/// because the flat simd128 rank-1 panel already runs near the rate its
+/// gemm-fed replacement could. `384` is the value that is optimal-or-tied
+/// at *every* swept size: pure-flat through n=384 (fixes a 7.6% loss the
+/// earlier 256 had at n=384), one split above. Narrow crossovers (≤64)
+/// lose badly (skinny gemms). The recursion is kept for the n>512 regime
+/// the sweep can't reach, where gemm should eventually pay off.
+pub const RECOMMENDED_CROSSOVER: usize = 384;
 
 /// Recursive LU (`dgetrf2`/Toledo shape) — the top-ranked technique from
 /// docs/research-lu-wasm-2026-07.md: splitting at w/2 casts the panel's
@@ -244,10 +247,11 @@ pub const RECOMMENDED_CROSSOVER: usize = 256;
 ///
 /// Base-case width for the recursive unit-lower trsm (`trsm_rec`) — below
 /// this the trsm runs flat simd128 substitution instead of splitting into
-/// gemms. Swept on the runner 2026-07-09 (`lu-tune.yml`): 128 wins at
-/// n=384–512 (the sizes where the trsm actually recurses); 32–64 lose to
-/// tiny gemms, same lesson as the crossover.
-pub const RECOMMENDED_TRSM_BASE: usize = 128;
+/// gemms. Swept on the runner 2026-07-09 (`lu-tune.yml`, 3 rounds): the
+/// n=512 winners all used a *non-recursing* trsm (tb ≥ 256), same lesson as
+/// the crossover — flat simd128 substitution beats splitting into small
+/// gemms on 2-lane wasm through the swept range.
+pub const RECOMMENDED_TRSM_BASE: usize = 256;
 
 /// Same output contract as [`lu_factor_in_place`] (LAPACK ipiv semantics):
 /// identical pivot sequence, factors equal up to gemm reassociation.

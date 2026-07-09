@@ -230,3 +230,43 @@ wider flat base cases than the dev box picked) were baked and re-raced:
   at n=256) so a re-pin or bad tune can't silently undo it.
 - Suite geomean **0.58×** (Run 4: 0.57×). Unchanged conclusion overall;
   the eigen flank (eigvals/schur 0.3–0.4×) remains the dominant gap.
+
+## Run 6 — wasm-shaped QR kernel + LU re-tune (2026-07-09, run 29048492853)
+
+Two things: the unblocked Householder QR kernel (`kernels/src/qr.rs`,
+`qr_r_wk`) enters the ring, and the recursive-LU knobs were re-swept over
+3 rounds (`lu-tune.yml` run 29048491497) because the first single-round
+sweep wasn't trustworthy. **This was a faster runner instance than Runs
+4–5** (scipy LU@512 17.8 ms vs 18.4; matmul@512 only 9.7× because numpy's
+matmul didn't collapse as hard) — so read the *ratios*, which are same-run
+valid, not the absolutes against earlier runs.
+
+**QR — the kernel is a decisive win at every size:**
+
+| n | qr_r_wk | faer bs=1 | faer default | scipy | wk vs scipy | wk vs faer-bs1 |
+| -: | -: | -: | -: | -: | -: | -: |
+| 64 | **0.08 ms** | 0.28 | 4.59 | 0.20 | **2.5×** | 3.5× |
+| 128 | **0.52 ms** | 1.40 | 10.76 | 1.35 | **2.6×** | 2.7× |
+| 256 | **4.11 ms** | 8.28 | 55.04 | 11.02 | **2.7×** | 2.0× |
+| 512 | **28.74 ms** | 58.02 | 246.34 | 86.78 | **3.0×** | 2.0× |
+
+- Beats scipy **2.5–3.0× at every size**, including n=512 where the
+  factorizations usually lose — the first faer factorization to beat scipy
+  decisively across the whole range. Confirms the research call
+  empirically: the fused unblocked dot+axpy panel is 2–3.5× leaner than
+  faer's own `block_size=1` machinery (compact-WY setup even at width 1),
+  and there is no compact-WY/T-matrix/gemm in it at all.
+- The projection ("large QR lead") held and then some. Gated at
+  `wk ≤ 0.8×faer-tuned` so it can't silently regress.
+
+**LU re-tune — the recursion barely earns its keep (honest):** the 3-round
+sweep (top-3 per size printed) shows pure-flat winning outright at
+n=192/256/384 and tying within 0.1% at n=512 — the flat simd128 panel is
+the engine, gemm-fed recursion adds almost nothing through n=512. The
+first sweep's `co=256` was reproduced as good-but-not-optimal (7.6% behind
+pure-flat at n=384; a coin-flip at 512). Re-baked `crossover=384`,
+`trsm_base=256` — optimal-or-tied at every swept size, recursion retained
+only for the n>512 regime the sweep can't reach. On this instance
+`lu_factor_rec` read 1.0–1.2× scipy across sizes, but that's the fast
+instance talking; the durable claim stays "parity-ish at 256, ~0.8× at
+512" from the controlled Run 5.
