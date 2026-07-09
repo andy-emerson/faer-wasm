@@ -136,3 +136,31 @@ What this changes:
 - **Eigen-pipelines stay the weak flank at every size** (0.1–0.6×):
   unchanged conclusion — the lahqr-class kernel work is where their gap
   lives, queued after QR/LU per the architect's ordering.
+
+## Run 3 — first wasm-shaped kernel enters the ring (2026-07-09, run 28995103525)
+
+`lu_factor_wk` is `faer-wasm-kernels`' blocked LU: lean simd128 panel +
+faer-gemm trailing updates (kernels/src/lu.rs). Same box, four LU
+implementations against scipy's `lu_factor`:
+
+| n | wk (shaped) | faer tuned | faer default | scipy | wk vs scipy |
+| -: | -: | -: | -: | -: | -: |
+| 64 | **0.06 ms** | 0.07 ms | 0.87 ms | 0.08 ms | **1.5×** |
+| 128 | **0.35 ms** | 0.45 ms | 3.22 ms | 0.38 ms | **1.1×** |
+| 256 | 3.27 ms | 3.26 ms | 14.48 ms | 2.43 ms | 0.7× |
+| 512 | **27.69 ms** | 30.50 ms | 68.42 ms | 18.37 ms | 0.7× |
+
+Approach-validation read (new-faer vs old-faer vs incumbent):
+
+- The shaped kernel is the **fastest LU on wasm among all faer paths at
+  every size** — 9–14× over faer's defaults at 64–128, 2.5–4.4× at
+  256–512, and it beats the best tuning by 10–30% except a tie at 256.
+- It **beats scipy at n=64 and n=128** — the first faer LU ever to do so
+  at any size. The shaping approach is validated in the regime where
+  parameters alone had plateaued at 0.8–1.3×.
+- The n ≥ 256 residual is real on equal hardware: 1.35× at 256, 1.5× at
+  512. Flop accounting places it in the O(n²·nb) parts (panel + trsm at
+  ~3 GF vs the gemm bulk's ~4.7): closing it needs higher-intensity
+  panel updates (rank-2+), not more parameter search. Bounded,
+  understood, and diminishing — the eigen flank's 2.5–3× gaps are the
+  bigger target.
