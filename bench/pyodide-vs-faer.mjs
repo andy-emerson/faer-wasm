@@ -29,6 +29,7 @@ const OPS = [
 	['lu_factor', 'run_lu_factor_tuned', [0, 0], 'sla.lu_factor(a)'],
 	['lu_factor_tuned', 'run_lu_factor_tuned', [1 << 30, 0], 'sla.lu_factor(a)'],
 	['lu_factor_wk', 'run_lu_factor_wk', [0], 'sla.lu_factor(a)'],
+	['lu_factor_rec', 'run_lu_factor_rec', [0], 'sla.lu_factor(a)'],
 	['qr_r', 'run_qr', null, "np.linalg.qr(a, mode='r')"],
 	['qr_r_tuned', 'run_qr_factor_tuned', [1, 1 << 30], "np.linalg.qr(a, mode='r')"],
 	['svd', 'run_svd', null, 'np.linalg.svd(a)'],
@@ -72,6 +73,21 @@ const versions = await py.runPythonAsync(
 	'import numpy, scipy; f"pyodide numpy {numpy.__version__}, scipy {scipy.__version__}"',
 );
 console.log(`# ${versions}; node ${process.version}`);
+
+// what BLAS/LAPACK is scipy actually linked against in Pyodide? (research
+// question from docs/research-lu-wasm-2026-07.md — claimed OpenBLAS with
+// generic C kernels, unverified until printed here)
+console.log('## scipy/numpy build config');
+console.log(
+	await py.runPythonAsync(`
+import io, contextlib, numpy, scipy
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    print("--- numpy ---"); numpy.show_config()
+    print("--- scipy ---"); scipy.show_config()
+buf.getvalue()
+`),
+);
 
 await py.runPythonAsync(`
 import time

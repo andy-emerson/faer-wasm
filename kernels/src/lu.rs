@@ -220,3 +220,174 @@ pub fn lu_solve_in_place(a: MatRef<'_, f64>, piv: &[usize], b: &mut [f64]) {
 		}
 	}
 }
+
+/// Base-case width for [`lu_factor_recursive_in_place`] — below this the
+/// recursion switches to flat right-looking loops (ReLAPACK's crossover
+/// practice). Swept on wasm 2026-07-09: 64–160 are within run noise at
+/// n=256–512 (all beat the blocked driver); narrow crossovers (8–32) LOSE —
+/// they feed skinny gemms whose call overhead exceeds the flat-loop cost.
+pub const RECOMMENDED_CROSSOVER: usize = 128;
+
+/// Recursive LU (`dgetrf2`/Toledo shape) — the top-ranked technique from
+/// docs/research-lu-wasm-2026-07.md: splitting at w/2 casts the panel's
+/// memory-bound rank-1 work into trsm + gemm at growing ranks; the
+/// `crossover`-wide base case runs the flat simd128 loops. Measured on wasm
+/// 2026-07-09 (local box): ~7% faster than [`lu_factor_in_place`] at n=256,
+/// ~11% at n=512, identical below (both go flat-loop-only there). The win
+/// is real but smaller than the research projection because the flat panel
+/// already runs near this box's skinny-gemm rate.
+///
+/// Same output contract as [`lu_factor_in_place`] (LAPACK ipiv semantics):
+/// identical pivot sequence, factors equal up to gemm reassociation.
+/// `crossover = 0` uses [`RECOMMENDED_CROSSOVER`].
+pub fn lu_factor_recursive_in_place(mut a: MatMut<'_, f64>, piv: &mut [usize], crossover: usize) {
+	let n = a.nrows();
+	assert!(a.ncols() == n, "square only for now");
+	assert!(piv.len() >= n);
+	assert!(a.row_stride() == 1, "column-major with unit row stride required");
+	// same rule as the blocked driver: flat loops alone win through n=128,
+	// recursion pays only once the gemm ranks grow past that
+	let crossover = if crossover == 0 {
+		if n <= 128 { n.max(1) } else { RECOMMENDED_CROSSOVER }
+	} else {
+		crossover
+	};
+	let cs = a.col_stride() as usize;
+	unsafe {
+		lu_rec(a.rb_mut(), cs, 0, n, piv, crossover);
+	}
+}
+
+/// swap rows r1 <-> r2 across columns [c0, c1)
+#[inline(always)]
+unsafe fn swap_rows(base: *mut f64, cs: usize, c0: usize, c1: usize, r1: usize, r2: usize) {
+	let mut c = c0;
+	while c < c1 {
+		let pc = base.add(c * cs);
+		let t = *pc.add(r1);
+		*pc.add(r1) = *pc.add(r2);
+		*pc.add(r2) = t;
+		c += 1;
+	}
+}
+
+/// factor the `w`-wide block starting at diagonal position `d` over rows
+/// `d..m`, columns `d..d+w`, recording absolute pivots; swaps are applied
+/// only within columns [d, d+w) — the caller handles siblings
+unsafe fn lu_rec(mut a: MatMut<'_, f64>, cs: usize, d: usize, w: usize, piv: &mut [usize], crossover: usize) {
+	let m = a.nrows();
+	let base = a.rb_mut().as_ptr_mut();
+	if w <= crossover {
+		// base case: flat-loop right-looking factorization (same shape as
+		// the blocked driver's panel)
+		for k in 0..w {
+			let jc = d + k;
+			let col = base.add(jc * cs);
+			let mut p = jc;
+			let mut mx = (*col.add(jc)).abs();
+			let mut i = jc + 1;
+			while i < m {
+				let v = (*col.add(i)).abs();
+				if v > mx {
+					mx = v;
+					p = i;
+				}
+				i += 1;
+			}
+			piv[jc] = p;
+			if p != jc {
+				swap_rows(base, cs, d, d + w, jc, p);
+			}
+			let dv = *col.add(jc);
+			if dv != 0.0 {
+				let inv = 1.0 / dv;
+				let mut i = jc + 1;
+				while i < m {
+					*col.add(i) *= inv;
+					i += 1;
+				}
+			}
+			let mut l = k + 1;
+			while l < w {
+				let colr = base.add((d + l) * cs);
+				let alk = *colr.add(jc);
+				if alk != 0.0 {
+					axpy(colr.add(jc + 1), col.add(jc + 1), alk, m - jc - 1);
+				}
+				l += 1;
+			}
+		}
+		return;
+	}
+
+	let n1 = w / 2;
+	// 1. factor the left half over all rows
+	lu_rec(a.rb_mut(), cs, d, n1, piv, crossover);
+	let base = a.rb_mut().as_ptr_mut();
+	// 2. apply the left half's pivots to the right-half columns
+	for k in d..d + n1 {
+		if piv[k] != k {
+			swap_rows(base, cs, d + n1, d + w, k, piv[k]);
+		}
+	}
+	// 3. A12 = L11^{-1} A12 (recursive unit-lower trsm: off-diagonal via gemm)
+	trsm_rec(a.rb_mut(), cs, d, n1, d + n1, d + w);
+	// 4. A22 -= A21 * A12 (rows d+n1..m)
+	{
+		let (_, a12_full, a21_full, a22_full) = a.rb_mut().split_at_mut(d + n1, d + n1);
+		// a12_full: rows 0..d+n1 × cols d+n1..ncols ; want rows d..d+n1, cols 0..(w-n1)
+		let a12 = a12_full.rb().subrows(d, n1).subcols(0, w - n1);
+		// a21_full: rows d+n1..m × cols 0..d+n1 ; want cols d..d+n1
+		let a21 = a21_full.rb().subcols(d, n1);
+		// a22_full: rows d+n1..m × cols d+n1.. ; want cols 0..(w-n1)
+		let a22 = a22_full.subcols_mut(0, w - n1);
+		matmul(a22, Accum::Add, a21, a12, -1.0, Par::Seq);
+	}
+	// 5. factor the right half over rows d+n1..m
+	lu_rec(a.rb_mut(), cs, d + n1, w - n1, piv, crossover);
+	let base = a.rb_mut().as_ptr_mut();
+	// 6. apply the right half's pivots back to the left-half columns
+	for k in d + n1..d + w {
+		if piv[k] != k {
+			swap_rows(base, cs, d, d + n1, k, piv[k]);
+		}
+	}
+}
+
+/// X = L^{-1} X where L is the unit-lower k×k block at (d, d) and X spans
+/// rows d..d+k, columns [c0, c1). Recursive: diagonal blocks by lean
+/// substitution, the off-diagonal update by gemm.
+unsafe fn trsm_rec(mut a: MatMut<'_, f64>, cs: usize, d: usize, k: usize, c0: usize, c1: usize) {
+	// 64, not 32: halving further replaces lean flat loops with gemms too
+	// small to amortize their call overhead (measured +0.3 ms at n=128)
+	const TRSM_BASE: usize = 64;
+	if k <= TRSM_BASE {
+		let base = a.rb_mut().as_ptr_mut();
+		let mut c = c0;
+		while c < c1 {
+			let xc = base.add(c * cs);
+			for kk in 0..k {
+				let xk = *xc.add(d + kk);
+				if xk != 0.0 {
+					let lc = base.add((d + kk) * cs);
+					axpy(xc.add(d + kk + 1), lc.add(d + kk + 1), xk, k - kk - 1);
+				}
+			}
+			c += 1;
+		}
+		return;
+	}
+	let k1 = k / 2;
+	// solve top: L11 X1
+	trsm_rec(a.rb_mut(), cs, d, k1, c0, c1);
+	// X2 -= L21 * X1
+	{
+		let (_, x1_full, l21_full, x2_full) = a.rb_mut().split_at_mut(d + k1, d + k1);
+		let x1 = x1_full.rb().subrows(d, k1).subcols(c0 - (d + k1), c1 - c0);
+		let l21 = l21_full.rb().subrows(0, k - k1).subcols(d, k1);
+		let x2 = x2_full.subrows_mut(0, k - k1).subcols_mut(c0 - (d + k1), c1 - c0);
+		matmul(x2, Accum::Add, l21, x1, -1.0, Par::Seq);
+	}
+	// solve bottom: L22 X2
+	trsm_rec(a.rb_mut(), cs, d + k1, k - k1, c0, c1);
+}

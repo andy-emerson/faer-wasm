@@ -119,6 +119,16 @@ pub extern "C" fn run_lu_factor_wk(nb: usize) -> f64 {
 }
 
 #[no_mangle]
+pub extern "C" fn run_lu_factor_rec(crossover: usize) -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    let mut f = s.a.to_owned();
+    let mut piv = alloc::vec![0usize; n];
+    faer_wasm_kernels::lu::lu_factor_recursive_in_place(f.as_mut(), &mut piv, crossover);
+    f[(0, 0)] + f[(n - 1, n - 1)] + piv[n / 2] as f64
+}
+
+#[no_mangle]
 pub extern "C" fn run_schur_tuned(blocking_threshold: usize) -> f64 {
     use faer::dyn_stack::{MemBuffer, MemStack};
     use faer::{Auto, Col, Mat, Par};
