@@ -1,0 +1,123 @@
+// Head-to-head: faer-wasm vs Pyodide (numpy/scipy compiled to wasm), same
+// problems, same V8, same process.
+//   PYODIDE_PATH=<path/to/pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>
+//
+// Pyodide is the incumbent scientific-computing-on-wasm stack (scipy's
+// LAPACK compiled to wasm), which makes this the apples-to-apples "why
+// faer-wasm" comparison — unlike a native-OpenBLAS baseline, both sides pay
+// the same wasm tax. Each stack does its idiomatic call for the same
+// mathematical problem; known asymmetries are footnoted in the report.
+//
+// NOTE the container this repo is developed in blocks the Pyodide package
+// CDN; the pyodide-bench.yml workflow runs this on a GitHub runner (open
+// egress). Results land in the job log and as a workflow artifact.
+import { readFileSync, writeFileSync } from 'node:fs';
+
+const wasmPath = process.argv[2];
+if (!wasmPath) {
+	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
+	process.exit(2);
+}
+const SIZES = [64, 128, 256];
+// [name, faer bench export, python lambda body]
+const OPS = [
+	['matmul', 'run_matmul', 'a @ b'],
+	['lu_solve', 'run_lu_solve', 'np.linalg.solve(a, rhs)'],
+	['qr_r', 'run_qr', "np.linalg.qr(a, mode='r')"],
+	['svd', 'run_svd', 'np.linalg.svd(a)'],
+	['eigvals', 'run_gen_evd', 'np.linalg.eigvals(a)'],
+	['schur', 'run_schur', 'sla.schur(a)'],
+	['matmul_c64', 'run_matmul_c64', 'ac @ bc'],
+	['lu_solve_c64', 'run_lu_solve_c64', 'np.linalg.solve(ac, rhsc)'],
+	['qr_r_c64', 'run_qr_c64', "np.linalg.qr(ac, mode='r')"],
+	['schur_c64', 'run_schur_c64', "sla.schur(ac, output='complex')"],
+];
+
+// ---- faer side (same adaptive min-of-3 protocol as gate.mjs)
+const bytes = readFileSync(wasmPath);
+async function timeFaer(exportName, n) {
+	let best = Infinity;
+	for (let rep = 0; rep < 3; rep++) {
+		const { instance } = await WebAssembly.instantiate(bytes, {});
+		const e = instance.exports;
+		e.setup(n);
+		const f = e[exportName];
+		let sink = f();
+		let t0 = performance.now();
+		sink += f();
+		const per = Math.max((performance.now() - t0) / 1e3, 1e-9);
+		const leakCap = Math.floor(150e6 / (8 * 8 * n * n));
+		const iters = Math.min(Math.max(Math.ceil(0.15 / per), 3), Math.min(200, Math.max(leakCap, 3)));
+		t0 = performance.now();
+		for (let i = 0; i < iters; i++) sink += f();
+		best = Math.min(best, ((performance.now() - t0) * 1e6) / iters);
+		if (!Number.isFinite(sink)) throw new Error(`${exportName}(n=${n}): non-finite`);
+	}
+	return best;
+}
+
+// ---- pyodide side
+const { loadPyodide } = await import(process.env.PYODIDE_PATH ?? 'pyodide');
+const py = await loadPyodide();
+await py.loadPackage(['numpy', 'scipy'], { messageCallback: () => {} });
+const versions = await py.runPythonAsync(
+	'import numpy, scipy; f"pyodide numpy {numpy.__version__}, scipy {scipy.__version__}"',
+);
+console.log(`# ${versions}; node ${process.version}`);
+
+await py.runPythonAsync(`
+import time
+import numpy as np
+import scipy.linalg as sla
+
+def setup(n):
+    global a, b, rhs, ac, bc, rhsc
+    rng = np.random.default_rng(0x9E3779B9 ^ n)
+    a = rng.uniform(-1, 1, (n, n))
+    b = rng.uniform(-1, 1, (n, n))
+    rhs = rng.uniform(-1, 1, (n,))
+    ac = rng.uniform(-1, 1, (n, n)) + 1j * rng.uniform(-1, 1, (n, n))
+    bc = rng.uniform(-1, 1, (n, n)) + 1j * rng.uniform(-1, 1, (n, n))
+    rhsc = rng.uniform(-1, 1, (n,)) + 1j * rng.uniform(-1, 1, (n,))
+
+def bench(f):
+    best = float("inf")
+    for _ in range(3):
+        f()
+        t0 = time.perf_counter(); f()
+        per = max(time.perf_counter() - t0, 1e-9)
+        iters = min(max(int(0.15 / per) + 1, 3), 200)
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            f()
+        best = min(best, (time.perf_counter() - t0) / iters * 1e9)
+    return best
+
+# correctness spot-check before timing anything
+setup(32)
+t, z = sla.schur(a)
+assert abs(a - z @ t @ z.T).max() < 1e-12, "pyodide schur residual too large"
+`);
+
+// ---- run both, emit table
+const rows = [];
+for (const n of SIZES) {
+	await py.runPythonAsync(`setup(${n})`);
+	for (const [name, faerExport, pyBody] of OPS) {
+		const pyNs = await py.runPythonAsync(`bench(lambda: ${pyBody})`);
+		const faerNs = await timeFaer(faerExport, n);
+		rows.push({ op: name, n, faer_ms: faerNs / 1e6, pyodide_ms: pyNs / 1e6, speedup: pyNs / faerNs });
+		console.log(JSON.stringify({ op: name, n, faer_ns: Math.round(faerNs), pyodide_ns: Math.round(pyNs) }));
+	}
+}
+
+console.log('\n| op | n | faer-wasm | pyodide | speedup |');
+console.log('| - | -: | -: | -: | -: |');
+for (const r of rows) {
+	console.log(
+		`| ${r.op} | ${r.n} | ${r.faer_ms.toFixed(2)} ms | ${r.pyodide_ms.toFixed(2)} ms | ${r.speedup.toFixed(1)}× |`,
+	);
+}
+const geo = rows.reduce((s, r) => s + Math.log(r.speedup), 0) / rows.length;
+console.log(`\ngeomean speedup: ${Math.exp(geo).toFixed(2)}×`);
+writeFileSync('pyodide-vs-faer-results.json', JSON.stringify(rows, null, '\t'));

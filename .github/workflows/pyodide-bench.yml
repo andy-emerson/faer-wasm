@@ -1,0 +1,78 @@
+name: pyodide bench
+
+# Manual head-to-head: faer-wasm vs Pyodide (numpy/scipy on wasm), same
+# problems, same V8. Runs on demand only — it downloads the Pyodide
+# distribution (~50 MB of wheels) and takes several minutes, so it is not
+# part of the per-push wasm gate. The development container's network
+# policy blocks the Pyodide CDN, which is why this lives in Actions
+# (runners have open egress). Results: job log + uploaded artifact.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pyodide-bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read upstream pins
+        id: pins
+        run: |
+          echo "faer=$(grep -oE '[0-9a-f]{40}' patches/UPSTREAM-BASE.txt | sed -n 1p)" >> "$GITHUB_OUTPUT"
+          echo "pulp=$(grep -oE '[0-9a-f]{40}' patches/UPSTREAM-BASE.txt | sed -n 2p)" >> "$GITHUB_OUTPUT"
+
+      - name: Clone upstreams at the pinned commits
+        run: |
+          set -eux
+          clone_pinned () {
+            git init -q "$1"
+            git -C "$1" remote add origin "https://github.com/sarah-quinones/$1"
+            git -C "$1" fetch --depth 1 -q origin "$2"
+            git -C "$1" checkout -q FETCH_HEAD
+          }
+          clone_pinned faer-rs "${{ steps.pins.outputs.faer }}"
+          clone_pinned pulp    "${{ steps.pins.outputs.pulp }}"
+
+      - name: Apply carried patches
+        run: |
+          set -eux
+          for p in patches/faer-rs/*.patch; do
+            git -C faer-rs apply "../$p"
+          done
+          for p in patches/pulp/*.patch; do
+            git -C pulp apply "../$p"
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bench
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the faer bench wasm (opt-level 3)
+        working-directory: bench
+        run: cargo build --lib --release --target wasm32-unknown-unknown
+
+      - name: Install Pyodide
+        run: npm install --prefix /tmp/pyo pyodide
+
+      - name: Run the head-to-head
+        working-directory: bench
+        run: |
+          PYODIDE_PATH=/tmp/pyo/node_modules/pyodide/pyodide.mjs \
+            node pyodide-vs-faer.mjs target/wasm32-unknown-unknown/release/bench_harness.wasm \
+            | tee pyodide-vs-faer.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pyodide-vs-faer
+          path: |
+            bench/pyodide-vs-faer.log
+            bench/pyodide-vs-faer-results.json
