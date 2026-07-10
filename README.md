@@ -26,7 +26,14 @@ Empirical basis in docs/.
   correctness fix: pulp's wasm RelaxedSimd backend passed NEON
   accumulator-first FMA arguments to the accumulator-last `relaxed_madd`
   in its complex `mul_add_e`/`mul_e` kernels, making all c64 compute
-  wrong under `+relaxed-simd` (docs/wasm.md §4).
+  wrong under `+relaxed-simd` (docs/wasm.md §4); and
+  `faer-rs/0004-fix-no_std-deflation-window-log2.patch`, a 1-line fix to
+  the `no_std` branch of the Schur AED deflation-window default, which
+  computed `log2(n/n)` = 0 instead of `n/log2(n)` — on every `no_std`
+  build (i.e. all typical wasm builds) the aggressive-early-deflation
+  window degenerated to 2 for 150 ≤ n < 590, exploding eigensolver
+  iteration counts ~50-85× (n=512: 1091 AED calls/852 sweeps → 26/22
+  after the fix; docs/research-eig-wasm-2026-07.md).
 - `schur/` — **`faer-schur`**, the first Phase 2 companion crate:
   real + complex Schur decomposition (`gees`-shaped) and eigenvalue
   reordering (`trexc`/`trsen`-shaped) over faer's public API. `no_std`,

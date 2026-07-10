@@ -1,0 +1,12 @@
+diff --git a/faer/src/linalg/evd/schur/mod.rs b/faer/src/linalg/evd/schur/mod.rs
+--- a/faer/src/linalg/evd/schur/mod.rs
++++ b/faer/src/linalg/evd/schur/mod.rs
+@@ -95,7 +95,7 @@ extern "C" fn default_recommended_deflation_window(
+ 		}
+ 		#[cfg(not(feature = "std"))]
+ 		{
+-			libm::log2(n as f64 / (n as f64)) as usize
++			(n as f64 / libm::log2(n as f64)) as usize
+ 		}
+ 	} else if n < 3000 {
+ 		96

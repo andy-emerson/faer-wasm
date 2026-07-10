@@ -56,7 +56,9 @@ test and six stale claims.)
   (gitignored — never commit them). Pin them to the commits in
   `patches/UPSTREAM-BASE.txt`; apply `patches/faer-rs/*.patch` to
   `faer-rs/` (0001: the 4-line 32-bit fix; 0002: 6 visibility-only lines
-  exposing the Schur kernels) and `patches/pulp/*.patch` to `pulp/`
+  exposing the Schur kernels; 0004: 1-line fix for the no_std
+  AED-deflation-window `log2(n/n)`=0 bug that exploded eigensolver
+  iterations ~50-85× on wasm) and `patches/pulp/*.patch` to `pulp/`
   (0003: 4-line fix for the relaxed-simd complex-mul argument-order bug
   — this one is a *correctness* fix, not behavior-neutral). All dropped
   when upstream makes them unnecessary.
