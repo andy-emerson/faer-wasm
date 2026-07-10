@@ -151,6 +151,70 @@ measured — the GEMV surprised us at 33% of bandwidth, so verifying the
 back-end before abandoning is warranted); (c) accept SVD as near-ceiling
 and move to eigvals, where the opponent/headroom may differ.
 
+## Deep-research pass (4-angle fan-out) + the refuting runner sweep (2026-07-10)
+
+The architect asked for deep research when none of the surfaced options
+reached parity, "much less optimality." Four independent agents attacked
+distinct angles; the synthesis is below, followed by the one concrete lever
+it produced — which was then **built, swept on the runner, and refuted**.
+
+**The four angles (research, graded plausible→verified where noted):**
+- **Angle 3 — faer source (verified against `bidiag_svd.rs`):** the root
+  cause of faer SVD losing to scipy at small n is the divide-and-conquer
+  `recursion_threshold=128` default. Bidiagonal blocks up to 127 are solved
+  by the **scalar `qr_algorithm`** (Golub–Kahan, Givens vector accumulation,
+  *no SIMD*), where LAPACK `dbdsdc` uses ~25-element leaves + gemm merges.
+  Proposed fix: lower `recursion_threshold` so more of the work routes
+  through the SIMD divide-and-conquer + gemm path. **This is the only
+  concrete, testable lever the whole fan-out produced.**
+- **Angle 1 — dgesdd flops:** faer and dgesdd run the *same* algorithm at
+  the *same* ~8–9 n³ flop count; scipy's edge (where it has one) is
+  overhead/constant-factor, not fewer flops. The bidiag half is memory-bound
+  BLAS-2 — an unblockable floor, not a lever.
+- **Angle 2 — the ~70% back-end:** it is *mostly gemm at compute peak* — the
+  `dormbr` back-transform (≈4 n³, biggest single flop bucket) plus the top
+  DC merges, both of which faer already routes into its fast gemm (which our
+  matmul confirms runs near the 5.5 GF/s peak). The *small* DC leaf merges
+  are where 2-lane wasm loses — but shrinking the leaf (lower threshold) adds
+  more of those small, losing merges, not fewer. No GEMV-style bandwidth
+  headroom exists in the back-end.
+- **Angle 4 — alternatives:** no unexplored full-dense-SVD direction has a
+  clean >1.5× win at n≤512 on 2-lane wasm. Preconditioned Jacobi projects to
+  ~parity (and unpreconditioned is already killed, above); Barlow bidiag caps
+  ~15%; QR-then-SVD-of-R and bdsqr-with-vectors are both dead for square n.
+
+**The lever, tested on the runner (`svd-tune.mjs`, run 29070389762):**
+sweeping `recursion_threshold` both directions against faer's default 128 —
+
+| n | default(128) | best low-rt | best high-rt | verdict |
+| - | - | - | - | - |
+| 64  | 7.99 ms | rt8 = 0.77× | rt96 = 1.00× | lowering **hurts** 23% |
+| 128 | 16.11 ms | rt8 = 0.77× | rt96 = 1.00× | lowering **hurts** 23% |
+| 256 | 96.52 ms | rt96 = 1.02× | rt512 = 0.83× | flat; rt96 is noise |
+| 512 | 466.65 ms | rt96 = 1.01× | rt1024 = 0.76× | flat; rt96 is noise |
+
+**The proposed root-cause fix is refuted.** Lowering `recursion_threshold`
+(the research's recommendation) makes SVD **15–25% slower** at every size —
+the small DC-leaf merges lose on 2 lanes exactly as Angle 2 warned, and the
+scalar `qr_algorithm` leaf, though SIMD-less, is *cheaper* at these sizes
+than paying for more DC merges. Raising the threshold is also worse (one
+giant scalar leaf). The best any setting reached was rt=96 at n≥256, a
+1–2% change inside measurement noise. **faer's default 128 is already at or
+above the wasm optimum for this knob, in both directions.**
+
+**Consequence — SVD conclusion, now runner-confirmed on all fronts.** The
+deep research found the mechanism (scalar leaf) *and* established across all
+four angles that SVD-with-vectors is structurally gemm-bound-at-peak (the
+dominant back-transform) over a memory-bound bidiag floor. Unlike QR (weak
+generic-C opponent + a phase that maps onto our flat kernel = 3×), **SVD has
+no QR/LU-style wasm win available**: the dominant cost is already the fast
+gemm path, the one tunable knob is refuted, and Jacobi is killed. faer's SVD
+sits at ~0.5–0.8× scipy, rising toward parity with n, and that is close to
+the achievable 2-lane ceiling for full SVD with singular vectors. The only
+residual slivers are marginal (a bandwidth-optimal bidiag GEMV worth ~10–15%
+of the ~30%-of-time reduction phase = ~3–5% of total; a faster shared gemm
+kernel that would lift matmul/QR/LU/SVD alike). No cheap large win exists.
+
 ## Sources
 LAWN 169/170 (netlib), Drmač–Veselić Part I/II, Demmel–Veselić (SIAM 1992),
 Computing SVD with high relative accuracy (LAA 1999), vectorized Jacobi
