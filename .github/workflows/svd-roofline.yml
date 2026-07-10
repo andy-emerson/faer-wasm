@@ -1,0 +1,70 @@
+name: svd roofline
+
+# Manual SVD roofline + phase profile on the runner (architect direction
+# 2026-07-10): locate the machine ceiling (compute peak, bandwidth) and where
+# faer's SVD time actually goes (reduction vs solve), so we optimize toward
+# the hardware limit rather than scipy parity. No Pyodide; fast.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  svd-roofline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read upstream pins
+        id: pins
+        run: |
+          echo "faer=$(grep -oE '[0-9a-f]{40}' patches/UPSTREAM-BASE.txt | sed -n 1p)" >> "$GITHUB_OUTPUT"
+          echo "pulp=$(grep -oE '[0-9a-f]{40}' patches/UPSTREAM-BASE.txt | sed -n 2p)" >> "$GITHUB_OUTPUT"
+
+      - name: Clone upstreams at the pinned commits
+        run: |
+          set -eux
+          clone_pinned () {
+            git init -q "$1"
+            git -C "$1" remote add origin "https://github.com/sarah-quinones/$1"
+            git -C "$1" fetch --depth 1 -q origin "$2"
+            git -C "$1" checkout -q FETCH_HEAD
+          }
+          clone_pinned faer-rs "${{ steps.pins.outputs.faer }}"
+          clone_pinned pulp    "${{ steps.pins.outputs.pulp }}"
+
+      - name: Apply carried patches
+        run: |
+          set -eux
+          for p in patches/faer-rs/*.patch; do
+            git -C faer-rs apply "../$p"
+          done
+          for p in patches/pulp/*.patch; do
+            git -C pulp apply "../$p"
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bench
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the faer bench wasm (opt-level 3)
+        working-directory: bench
+        run: cargo build --lib --release --target wasm32-unknown-unknown
+
+      - name: SVD roofline + phase profile
+        working-directory: bench
+        run: |
+          node svd-roofline.mjs target/wasm32-unknown-unknown/release/bench_harness.wasm \
+            | tee svd-roofline.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: svd-roofline
+          path: bench/svd-roofline.log

@@ -261,6 +261,65 @@ pub extern "C" fn run_svd() -> f64 {
     s.a.svd().unwrap().S()[0]
 }
 
+// --- SVD roofline profiling (architect direction 2026-07-10: locate the
+// machine ceiling and where faer's SVD time actually goes, before deciding
+// tune-bidiag vs build-Jacobi). ---
+
+// faer's bidiagonalization ALONE (the reduction), mirroring svd/mod.rs's
+// internal setup. Timed against full run_svd to get the reduction/solve
+// split on the runner.
+#[no_mangle]
+pub extern "C" fn run_bidiag_only() -> f64 {
+    use faer::linalg::svd::bidiag::{bidiag_in_place, bidiag_in_place_scratch, BidiagParams};
+    let s = state();
+    let n = s.a.nrows();
+    let bs = qr_np::recommended_block_size::<f64>(n, n);
+    let mut bid = s.a.to_owned();
+    let mut hl = Mat::<f64>::zeros(bs, n);
+    let mut hr = Mat::<f64>::zeros(bs, n - 1);
+    let params: BidiagParams = Auto::<f64>::auto();
+    let mut mem = MemBuffer::new(bidiag_in_place_scratch::<f64>(n, n, Par::Seq, Spec::new(params)));
+    bidiag_in_place(
+        bid.as_mut(),
+        hl.as_mut(),
+        hr.as_mut(),
+        Par::Seq,
+        MemStack::new(&mut mem),
+        Spec::new(params),
+    );
+    bid[(0, 0)] + bid[(n - 1, n - 1)]
+}
+
+// STREAM triad over the packed n*n buffers (a += 1.5*b): reads a, reads b,
+// writes a = 24 bytes/elem, memory-bound. GB/s = 24*n*n / time is the
+// achievable-bandwidth roofline anchor at the SVD working-set size.
+#[no_mangle]
+pub extern "C" fn run_stream() -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    let len = n * n; // faer Mat is packed column-major (col_stride == nrows)
+    unsafe {
+        let ap = s.a.as_ptr() as *mut f64;
+        let bp = s.b.as_ptr();
+        let mut i = 0usize;
+        while i < len {
+            *ap.add(i) += 1.5 * *bp.add(i);
+            i += 1;
+        }
+        *ap
+    }
+}
+
+// Standalone GEMV y = A*x — the memory-bound kernel bidiagonalization spends
+// ~half its flops in. GB/s = 8*n*n / time; compare to run_stream to see if a
+// raw matvec already saturates bandwidth.
+#[no_mangle]
+pub extern "C" fn run_gemv() -> f64 {
+    let s = state();
+    let y = &s.a * &s.rhs;
+    y[(0, 0)]
+}
+
 #[no_mangle]
 pub extern "C" fn run_sa_evd() -> f64 {
     let s = state();
