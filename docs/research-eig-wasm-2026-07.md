@@ -99,13 +99,32 @@ parity with scipy before any wasm-shaping work (Hessenberg kernel,
 blocking_threshold tuning, shift-table shaping) — to be confirmed by a
 full three-way re-run on the runner with 0004 applied.
 
+## Runner confirmation of 0004 (run 29119237626)
+
+With the patch applied, on the reference machine, eigenvalues-only:
+
+| n | default (buggy → fixed) | counters (buggy → fixed) | lahqr-pinned |
+| - | - | - | - |
+| 128 | 94.3 ms (unchanged) | 52/39 (unchanged) | **14.7 ms** (6.4×) |
+| 256 | 173.3 → **149.7 ms** | 540/420 → **25/17** | **110.2 ms** (1.36×) |
+| 512 | 1459.4 → **598.1 ms** (2.44×) | 1091/852 → **26/22** | 960.6 ms (0.62×) |
+
+Post-fix, faer's defaults match the iparmq-style profile exactly (597 vs
+598 ms at n=512) — parameter re-shaping is NOT needed; only the bug was.
+The multishift-vs-lahqr **sign flips at large n**: multishift now wins at
+n=512 (1.61×), lahqr still wins at n≤256 (6.4× at 128, 1.36× at 256). So
+the wasm-right `blocking_threshold` sits between 256 and 512 (default 75
+is far too low for wasm; n=128 is untouched by the bug and still 6.4×
+better on lahqr — that residual gap is real wasm shaping, not the bug).
+faer-schur's `recommended_params` lahqr pin (usize::MAX) must be
+re-swept for the Schur-with-vectors case post-0004.
+
 ## Status / next
 
 - [x] Patch 0004 minted, round-trip verified (`git apply` clean on
   pin+0001+0002), full gate green (smoke-test exact values, faer-schur
   6/6, kernels 5/5).
-- [ ] Runner re-run of evd-tune with 0004 to confirm default-params
-  collapse on the reference machine.
+- [x] Runner re-run of evd-tune with 0004: confirmed (table above).
 - [ ] Three-way pyodide re-run: where does repaired eigvals land vs scipy?
 - [ ] Re-evaluate faer-schur's lahqr pin (crossover now between 256/512);
   sweep `blocking_threshold` on wasm.
