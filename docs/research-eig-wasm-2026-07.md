@@ -147,12 +147,78 @@ comparison.) What the full grid adds beyond the bug:
 3. **faer-schur's lahqr pin now costs 2.8× at n=512** for Schur-with-Z
    (2083 vs ~750 ms) — re-sweep the pin post-0004.
 
+## Deep-research harness findings (wf_a92bf7f7-da9; 104 agents, 22 sources, 22/25 claims confirmed 3-vote)
+
+The adversarially-verified harness ran in parallel with the empirical
+track (it launched before the bug was found; its evidence base is
+source-reading + primary literature, explicitly no runtime measurement).
+Where its inferences meet our runner data, measurement wins. Verified
+findings and their post-measurement status:
+
+- **The opponent runs multishift+AED at every benchmark size** (3-0×2):
+  dhseqr dispatches to dlaqr0 above NMIN=75 in OpenBLAS 0.3.28's bundled
+  LAPACK, Fortran and f2c/C alike. faer competes against the modern
+  algorithm, not dlahqr.
+- **Missing algorithm RULED OUT** (3-0×3) and **unrequested work RULED
+  OUT** (3-0×5): faer implements full dlaqr0-class multishift+AED, and
+  its eigenvalues-only path does strictly the reduced work (want_t
+  gating verified line-by-line against LAPACK's WANTT mechanism).
+  Independently confirms our source reading.
+- **Harness prime suspect #1 — parameter mistuning (nibble 50 vs 14,
+  32 vs ~56 shifts, window ladder)** (3-0×5): mechanistically real but
+  **REFUTED as the explanation by our post-0004 runner sweep** —
+  nibble=14 measures slightly *worse* (0.92× at n=512), and the
+  iparmq-style shift/window profile is indistinguishable from faer's
+  fixed defaults (597.4 vs 598.1 ms). The actual culprit was the no_std
+  `log2(n/n)`=0 window bug, which the harness's 3-vote source reading
+  did not catch — its agents verified the *std* branch's intended
+  semantics and never flagged the cfg-gated discrepancy. Instructive
+  failure mode: iteration *counters* caught what source review missed.
+- **Harness prime suspect #2 — Hessenberg shaping** (3-0): unblocked
+  below n=256, gemv-bound, measured 3× bandwidth headroom, and the
+  proven flat-simd128 panel + block-apply recipe applies. Matches our
+  measured phase split (~36% of the repaired pipeline at n=512).
+- **dlaqr5's sweep is level-3 via KACC22** (3-0×4): LAPACK's
+  far-from-diagonal updates run as two DGEMMs per chase step over
+  accumulated local reflections; small-bulge chains avoid shift
+  blurring. This is the surviving frame for our residual per-sweep gap:
+  faer's sweep also accumulates (wh/wv workspaces) but at n=128 its
+  blocks are tiny and tiny-gemm is a known faer-on-wasm weak spot —
+  measured 8× vs LAPACK's multishift at n=128 (94 vs 11 ms) at modest
+  iteration counts. The one structural question the harness left open
+  (its own flag): whether faer's gemm routing matches dlaqr5's
+  effectiveness at NS=12–32 on 2 lanes.
+- **No algorithm replacement exists** (3-0 + 2-1): Hessenberg +
+  multishift QR + AED is settled serial-optimal at n≤512; even the 2022
+  state of the art (Algorithm 1019/StarNEig) base-cases to *sequential
+  dhseqr* below ~300. Same shape as the SVD verdict: implementation
+  shaping wins, replacement loses.
+- **Correctness guards (Q5)** (3-0): faer's convergence safeguards match
+  LAPACK's exactly — exceptional shifts DAT1/DAT2 = 0.75/−0.4375, every
+  6 stalled cycles in the multishift driver / 10 in lahqr, AED window
+  adaptation after 5 stalls. No documented reference-LAPACK-on-wasm
+  eigensolver failures, no FMA/denormal-specific hazards in any
+  surviving claim (the correctness question is answered at
+  guard-inventory level; no wasm-specific horror stories exist in the
+  literature). Our exact-value smoke probes + faer-schur accuracy gates
+  passing with 0004 are the local correctness evidence.
+
+Caveats (harness's own): BBM paper bodies and StarNEig PDF were
+proxy-blocked (LAPACK source substituted — canonical-equivalent); three
+claims refuted 0-3 including an over-precise iparmq ladder and an IACC22
+assertion (LAPACK ≥3.10 changed how IACC22 is honored inside dlaqr5 —
+re-verify before leaning on it).
+
 ## Status / next
 
 - [x] Patch 0004 minted, round-trip verified (`git apply` clean on
   pin+0001+0002), full gate green (smoke-test exact values, faer-schur
   6/6, kernels 5/5).
 - [x] Runner re-run of evd-tune with 0004: confirmed (table above).
+- [x] Deep-research harness landed; parameter-mistuning suspect refuted
+  by measurement, Hessenberg + sweep-gemm-routing survive as the two
+  levers; algorithm replacement ruled out; correctness guard inventory
+  complete.
 - [ ] Three-way pyodide re-run: where does repaired eigvals land vs scipy?
 - [ ] Re-evaluate faer-schur's lahqr pin (crossover now between 256/512);
   sweep `blocking_threshold` on wasm.
