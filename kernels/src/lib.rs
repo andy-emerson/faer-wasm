@@ -20,3 +20,4 @@ extern crate alloc;
 
 pub mod lu;
 pub mod qr;
+pub mod svd;

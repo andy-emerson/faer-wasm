@@ -310,6 +310,30 @@ pub extern "C" fn run_stream() -> f64 {
     }
 }
 
+// One-sided Jacobi SVD probe (kernels/src/svd.rs): the bidiagonalization-
+// avoiding full SVD. run_svd_jacobi times it; run_svd_jacobi_sweeps returns
+// the sweep count so the profiler can report it per size.
+#[no_mangle]
+pub extern "C" fn run_svd_jacobi() -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    let mut u = s.a.to_owned();
+    let mut v = Mat::<f64>::zeros(n, n);
+    let mut sv = alloc::vec![0.0f64; n];
+    faer_wasm_kernels::svd::jacobi_svd_in_place(u.as_mut(), v.as_mut(), &mut sv, 60, 1e-13);
+    sv[0] + sv[n - 1]
+}
+
+#[no_mangle]
+pub extern "C" fn run_svd_jacobi_sweeps() -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    let mut u = s.a.to_owned();
+    let mut v = Mat::<f64>::zeros(n, n);
+    let mut sv = alloc::vec![0.0f64; n];
+    faer_wasm_kernels::svd::jacobi_svd_in_place(u.as_mut(), v.as_mut(), &mut sv, 60, 1e-13) as f64
+}
+
 // Standalone GEMV y = A*x — the memory-bound kernel bidiagonalization spends
 // ~half its flops in. GB/s = 8*n*n / time; compare to run_stream to see if a
 // raw matvec already saturates bandwidth.

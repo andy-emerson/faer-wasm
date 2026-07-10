@@ -35,6 +35,7 @@ const OPS = [
 	['qr_r_tuned', 'run_qr_factor_tuned', [1, 1 << 30], "np.linalg.qr(a, mode='r')"],
 	['qr_r_wk', 'run_qr_factor_wk', [], "np.linalg.qr(a, mode='r')"],
 	['svd', 'run_svd', null, 'np.linalg.svd(a)'],
+	['svd_jacobi', 'run_svd_jacobi', [], 'np.linalg.svd(a)'],
 	['eigvals', 'run_gen_evd', null, 'np.linalg.eigvals(a)'],
 	['schur', 'run_schur', null, 'sla.schur(a)'],
 	['matmul_c64', 'run_matmul_c64', null, 'ac @ bc'],
