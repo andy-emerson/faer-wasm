@@ -744,6 +744,55 @@ pub extern "C" fn run_schur_c64_k() -> f64 {
     }
 }
 
+/// TEMPORARY diagnostic (c64@n>=590 memory blowup): kernel Hessenberg +
+/// faer complex multishift alone, with an explicit blocking_threshold
+/// (0 = library default). Isolates which faer path allocates.
+#[no_mangle]
+pub extern "C" fn run_schur_c64_ms_probe(bt: usize) -> f64 {
+    use faer::c64;
+    let s = state();
+    let n = s.ac.nrows();
+    let mut h = s.ac.to_owned();
+    let mut tau = alloc::vec![c64::new(0.0, 0.0); n.saturating_sub(2).max(1)];
+    let mut work = alloc::vec![c64::new(0.0, 0.0); n];
+    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_factor_in_place(
+        h.as_mut(),
+        &mut tau,
+        &mut work,
+    );
+    for j in 0..n {
+        for i in j + 2..n {
+            h[(i, j)] = c64::new(0.0, 0.0);
+        }
+    }
+    let mut params: faer::linalg::evd::schur::SchurParams = faer::Auto::<c64>::auto();
+    if bt != 0 {
+        params.blocking_threshold = bt;
+    }
+    let mut w = faer::Col::<c64>::zeros(n);
+    let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<c64>(
+        n,
+        n,
+        false,
+        false,
+        Par::Seq,
+        params,
+    ));
+    let (info, _, _) = faer::linalg::evd::schur::complex_schur::multishift_qr::<c64>(
+        false,
+        h.as_mut(),
+        None,
+        w.as_mut(),
+        0,
+        n,
+        Par::Seq,
+        MemStack::new(&mut mem),
+        params,
+    );
+    assert!(info == 0);
+    w[0].re
+}
+
 // ---- f32 rows (f32/c32 phase, architect direction 2026-07-11): the four
 // headliners in f32 -- ~2x mechanism pair on wasm SIMD128 (4 lanes for
 // compute-bound, half traffic for bandwidth-bound). matmul rides faer's
@@ -1035,9 +1084,13 @@ pub extern "C" fn run_qr_factor_wk() -> f64 {
 mod wasm_shim {
     use core::alloc::{GlobalAlloc, Layout};
 
-    // leak-only bump allocator over memory.grow (same as smoke-test): the
-    // module needs zero imports. Benchmarks leak per run; node re-instantiates
-    // per size to reset memory.
+    // LIFO-rewind bump allocator over memory.grow (upgraded from leak-only
+    // 2026-07-11): freeing the MOST RECENT allocation rewinds the bump
+    // pointer, so nested temporaries — the pattern of faer's per-call c64
+    // matmul temps, measured at 15.4 GB cumulative / 25K allocations inside
+    // ONE c64 multishift at n=600, peak live only ~19 MB — are reclaimed.
+    // Non-LIFO frees still leak (bounded by the old behavior). The module
+    // still needs zero imports; node still re-instantiates per size.
     struct Bump;
 
     extern "C" {
@@ -1070,7 +1123,12 @@ mod wasm_shim {
             base as *mut u8
         }
 
-        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // LIFO rewind: reclaim iff this is the top allocation
+            if ptr as usize + layout.size() == OFFSET {
+                OFFSET = ptr as usize;
+            }
+        }
     }
 
     #[global_allocator]

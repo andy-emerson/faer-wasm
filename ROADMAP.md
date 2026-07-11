@@ -445,6 +445,7 @@ the submission template.
 | dead code: `real_schur.rs:837` `if true \|\|` disables the recursive-multishift AED branch — possibly intentional, worth asking | question upstream | source diff vs LAPACK, research-eig-wasm-2026-07.md |
 | blocked Hessenberg has a machine-sensitive cache cliff (7–95× slower than an unblocked kernel at n=1024 across runner instances) | perf report candidate | phase-split probe run 29136868733, cross-checked on 3 machines |
 | complex `JacobiRotation::rotg(a, b)` returns `r = 1` when `b == 0` (LAPACK `zlartg` returns `r = a`); the complex `lahqr` chase writes that `r` over the subdiagonal — wrong output for the measure-zero input class where a bulge entry is exactly 0 | bug report candidate | source reading during the c64 kernel port (our port uses LAPACK semantics); not yet reproduced with a concrete input |
+| c64 matmul allocates per-call temporaries via GlobalAlloc (f64 path doesn't): one c64 multishift call at n=600 = 15.4 GB cumulative / ~25K allocations, peak live ~19 MB — a `no_std` perf hazard (25K allocs per solve) and fatal on allocator-less/arena wasm patterns; also, the complex AED recurses into `multishift_qr` where the real path dead-codes that branch (`if true \|\|`) — an intentional(?) real/complex asymmetry | perf/no_std report candidate | counting-allocator probe `kernels/tests/alloc_probe.rs`, 2026-07-11; wasm OOM reproduced + fixed by LIFO-rewind shim |
 
 ## Boundary note — what does NOT live in this repo
 

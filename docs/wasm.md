@@ -50,9 +50,22 @@ Feature facts (all verified):
 
 For a module that instantiates with an empty import object (no JS glue,
 no wasm-bindgen), see `smoke-test/src/lib.rs`: `crate-type = ["cdylib"]`,
-`#![no_std]`, a leak-only bump allocator over `memory.grow` seeded from
-`__heap_base`, and a `panic_handler` that hits `unreachable`. The produced
-module needs zero imports:
+`#![no_std]`, a **LIFO-rewind** bump allocator over `memory.grow` seeded
+from `__heap_base`, and a `panic_handler` that hits `unreachable`. The
+produced module needs zero imports:
+
+**⚠ Do not use a leak-only bump allocator** (the pattern this repo
+recommended before 2026-07-11). faer's **c64 matmul allocates per-call
+temporaries through the global allocator** (its f64 path doesn't): one
+c64 multishift-Schur call at n=600 was measured at **15.4 GB cumulative
+across ~25K allocations** — peak *live* memory only ~19 MB, so any
+freeing allocator is fine, but a leak-only bump hits the 4 GB wasm32
+ceiling inside a single call and the next allocation returns null →
+`memory access out of bounds`. The fix is three lines in `dealloc`
+(rewind the bump pointer when the freed block is the most recent
+allocation — faer's temporaries are nested, so nearly all of the traffic
+reclaims); the guard that this stays sufficient is
+`kernels/tests/alloc_probe.rs`.
 
 ```js
 const { instance } = await WebAssembly.instantiate(bytes, {});

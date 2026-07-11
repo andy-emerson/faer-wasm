@@ -235,8 +235,13 @@ pub extern "C" fn dense_c64_probe() -> f64 {
 mod wasm_shim {
     use core::alloc::{GlobalAlloc, Layout};
 
-    // leak-only bump allocator over memory.grow, so the module needs no
-    // imports at all; fine for a smoke test
+    // LIFO-rewind bump allocator over memory.grow, so the module needs no
+    // imports at all. Upgraded from leak-only 2026-07-11: faer's c64 matmul
+    // allocates per-call temporaries through the global allocator (measured
+    // 15.4 GB cumulative inside ONE c64 multishift at n=600, peak live
+    // ~19 MB), so a leak-only bump OOMs on large-n complex work; rewinding
+    // on top-of-stack frees reclaims those nested temporaries. See
+    // docs/wasm.md §2.
     struct Bump;
 
     extern "C" {
@@ -268,7 +273,12 @@ mod wasm_shim {
             OFFSET = end;
             base as *mut u8
         }
-        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // LIFO rewind: reclaim iff this is the top allocation
+            if ptr as usize + layout.size() == OFFSET {
+                OFFSET = ptr as usize;
+            }
+        }
     }
 
     #[global_allocator]
