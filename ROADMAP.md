@@ -223,14 +223,14 @@ to one global, replication-graded tuning pass at the end.
       efficiency-gated (`wk ≤ 0.8×faer-tuned`). This *is* the "package
       width-1 as default" win and then some — a naive consumer would get
       `qr_r_wk`'s speed, not faer's native default.
-- [ ] **Wasm-shaped block-apply kernel `(I−V T Vᵀ)·C` in
-      `faer-wasm-kernels`** — coarse-only (no recursion, no skinny-gemm
-      base case; the LU lesson), routed into faer gemm. Buys little on
-      already-won QR; built as the reusable inner loop of Hessenberg.
-      Note the QR result reinforces the LU lesson: on 2-lane wasm the
-      flat simd128 loop is so close to gemm rate that routing into gemm
-      barely helps below ~512 — the block-apply's value is Hessenberg
-      structure reuse, not raw QR speed.
+- [x] **Hessenberg front-end — resolved differently than predicted**
+      (2026-07-11): the planned block-apply `(I−V T Vᵀ)·C` kernel was
+      never needed; the flat *unblocked* Hessenberg kernel
+      (`kernels/src/hessenberg.rs`, gaxpy right-apply + dot/axpy
+      left-apply) beat faer's blocked reduction 3.2×/7.0× at n=512/1024
+      and sidesteps faer's blocked-hess machine cliff (7–95× across
+      runners at 1024). The LU lesson held a third time: flat loops over
+      block structure on 2-lane wasm.
 - [x] **Focused research: SVD + eig wasm-shaping**
       (`docs/research-eig-svd-wasm-2026-07.md`, "focused" tier — one
       agent, ~2 min). Key finding: the eigen flank is dominated by the
@@ -241,15 +241,27 @@ to one global, replication-graded tuning pass at the end.
       of it → same weak opponent as QR → win-big potential. Back-ends
       (`bdsqr`/`stedc`/`hseqr`) left alone (`laed3` already gemm-shaped;
       `lahqr` fix shipped).
-- [ ] **Pivotal pre-build measurement**: does faer's own
-      `gebrd`/`sytrd`/`gehrd` just need param-tuning (faer-schur style) or
-      a flat-panel rebuild? Same fork QR faced. One profiling run +
-      `faer-rs/` read decides tuning-job vs kernel-job. **Do this before
-      building.**
-- [ ] **Eigen-flank kernel(s)** per the research: (1) flat simd128
-      reduction panel + block-apply→gemm — unblocks SVD *and* general-eig;
-      (2) symmetric `symv`/`syr2k` panel — unblocks symmetric eig. Scope
-      after the measurement above.
+- [x] **Pivotal pre-build measurement — answered for 2 of 3**:
+      `gehrd` → flat-panel rebuild won (kernel above); `gebrd` (SVD) →
+      measured as only ~30% of SVD wall time with a ~10–15% realizable
+      sliver, deliberately unpursued (`research-svd-wasm-2026-07.md`);
+      `sytrd` (symmetric eig) → still unprofiled, queued in the
+      next-sessions plan.
+- [x] **General-eig flank COMPLETE** (2026-07-10/11, full record in
+      `research-eig-wasm-2026-07.md`): upstream bug 0004 found via
+      iteration counters and carried as a 1-line patch (~50–85× iteration
+      collapse); per-n lahqr/multishift routing at the measured 480
+      crossover; flat Hessenberg kernel; hand double-shift `hqr` kernel
+      (dlahqr-shape, eigenvalues-only). Replication-gated verdicts vs
+      scipy: **wins 1.75×/2.05×/1.83×/1.24× at n=64/128/256/1024, parity
+      at 512**. Symmetric-eig panel still open (next-sessions plan).
+- [x] **f32/c32 phase, first cut** (2026-07-11): all four kernels generic
+      over `WasmScalar` (f64x2/f32x4), f64 bit-unchanged, f32 gates green;
+      runner f32 column vs scipy float32: matmul 4.3–9.1× (n≥128),
+      LU-solve 2.4–3.0×, QR 3.7–5.1×, eigvals 2.0–4.3× — scipy's
+      s-routines measure no faster than its d-routines on wasm. c32/c64
+      hand kernels remain future work (no complex kernels at either
+      precision yet).
 - [ ] LU residual at n≥256 (0.8–0.9× vs scipy): next levers per the
       research plan are relaxed-FMA base kernels and packing the panel
       columns; diminishing returns vs the eigen flank.

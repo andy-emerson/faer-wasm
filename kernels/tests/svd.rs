@@ -1,4 +1,7 @@
 //! Correctness gate for the one-sided Jacobi SVD probe: reconstruction
+//! (Outcome: the probe answered its question — 12–15 sweeps, kernel killed
+//! by measurement 2026-07-10. The test stays as the correctness gate on the
+//! evidence artifact.)
 //! ‖A − U·Σ·Vᵀ‖, orthogonality of U and V, and singular-value agreement with
 //! faer's own SVD — plus it prints sweeps-to-convergence per size (the number
 //! that decides whether the full build is worth it).

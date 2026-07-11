@@ -471,9 +471,10 @@ pub extern "C" fn run_eigvals_tuned(blocking: usize, nibble: usize, profile: usi
     eigvals_tuned_imp(blocking, nibble, profile).0
 }
 
-// The shipping wasm-tuned eigenvalues path: faer-schur's real_eigenvalues
-// (Hessenberg -> multishift QR, want_t=false, no Z) with the measured
-// wasm blocking threshold from recommended_eigenvalues_params().
+// Diagnostic: faer-schur's real_eigenvalues (faer Hessenberg -> multishift
+// QR, want_t=false, no Z) with the per-n routed params. Superseded as the
+// shipping path by run_eigvals_k3 (kernel Hessenberg + hqr kernel); kept
+// as the faer-front-end comparison arm and blocked-Hessenberg canary.
 #[no_mangle]
 pub extern "C" fn run_eigvals_wk() -> f64 {
     let s = state();

@@ -193,16 +193,22 @@ Unmeasured beyond n=256 — blocked paths must win eventually; re-run
 (smaller) overheads via their internal bidiag/tridiag stages; untuned for
 now.
 
-**Schur / general eigenvalues have the same disease, worse** (measured
-2026-07-09): faer's blocked multishift/AED path loses to the unblocked
-`lahqr` kernel by 2–13× through n=384 on wasm, and the default
-`blocking_threshold = 75` walks straight into it (13× at n=96).
-`faer-schur`'s convenience APIs ship wasm-tuned defaults
-(`recommended_params()`), so Schur via §8 is already fixed. faer's own
-`.eigenvalues()` takes no params and keeps the cliff — on wasm, prefer
-`faer-schur` for spectra at n ≥ 75 (eigenvalues land in `w_re`/`w_im` /
-`w`). Tables in `benchmarks-2026-07.md`; CI's complexity gate
-(`bench/complexity.mjs --gate`) keeps it from regressing.
+**Schur / general eigenvalues: two distinct fixes** (revised 2026-07-11).
+The 2026-07-09 measurement of "blocked multishift/AED loses 2–13× to
+`lahqr` through n=384" turned out to be an upstream bug for n ≥ 150, not
+a tuning fact: faer's `no_std` AED-deflation-window default computed
+`log2(n/n)` = 0, collapsing the window to 2 and exploding iteration
+counts ~50–85× — fixed by carried `patches/faer-rs/0004` (see
+`research-eig-wasm-2026-07.md`). Post-fix, the real wasm crossover is
+n≈480: scalar `lahqr` wins below, multishift wins from n=512.
+`faer-schur`'s `recommended_params(n)` routes per size (the routing must
+live *outside* `SchurParams` — `blocking_threshold` doubles as `nmin`
+inside the solver). faer's own `.eigenvalues()` takes no params; on wasm
+prefer `faer-schur::real::real_eigenvalues` (eigenvalues-only pipeline)
+or, fastest measured, the `faer-wasm-kernels` Hessenberg + `hqr`
+pipeline (replication-gated wins over scipy at n=64–256 and 1024,
+parity at 512). Tables in `research-eig-wasm-2026-07.md`; the parameters
+are provisional pending the global tuning pass (ROADMAP tuning freeze).
 
 ## 8. Schur decomposition + eigenvalue reordering (`faer-schur`)
 

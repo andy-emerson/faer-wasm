@@ -364,11 +364,11 @@ known weak faer f32 gemm at small n — watch-list item.)
   by measurement, Hessenberg + sweep-gemm-routing survive as the two
   levers; algorithm replacement ruled out; correctness guard inventory
   complete.
-- [ ] Three-way pyodide re-run: where does repaired eigvals land vs scipy?
-- [ ] Re-evaluate faer-schur's lahqr pin (crossover now between 256/512);
+- [x] Three-way pyodide re-run: done through the fix-1+2+3 benchmarks (tables above).
+- [x] Re-evaluate faer-schur's lahqr pin: done — per-n routing at the measured 480 crossover;
   sweep `blocking_threshold` on wasm.
-- [ ] Deep-research harness findings to append here (running,
+- [x] Deep-research harness findings appended above (landed,
   wf_a92bf7f7-da9): dgeev phase splits, iparmq semantics, correctness
   guards for wasm, algorithm-replacement candidates.
-- [ ] Hessenberg flat-panel kernel (task #17's deferred half) — now ~36%
+- [x] Hessenberg flat-panel kernel: built (fix 2), 3.2–7× faer's reduction — was ~36%
   of the repaired pipeline.

@@ -1,5 +1,15 @@
 # faer-wasm vs Pyodide (scipy/numpy on wasm) — 2026-07-09
 
+> **Status note (2026-07-11):** this file is the chronological run log;
+> the early "Pyodide wins most of this suite" headline describes Run 1
+> and is long superseded. Current replication-graded state: matmul
+> 4–20× wins (n ≥ 128), QR kernel 2.5–3×, LU-solve 1.4–1.7×, eigvals
+> kernel pipeline wins at n=64/128/256/1024 with parity at 512, an f32
+> column at 2–9× (scipy's s-routines are no faster than its d-routines
+> on wasm), SVD 0.5–0.8× (proven near its wasm ceiling), Schur 0.4–0.7×
+> (campaign queued). See `research-eig-wasm-2026-07.md` and
+> `research-svd-wasm-2026-07.md` for the current tables and verdicts.
+
 The first external head-to-head, per the architect's benchmark direction:
 the same problems solved by the incumbent scientific-computing-on-wasm
 stack, in the same V8, both sides single-threaded and paying the same

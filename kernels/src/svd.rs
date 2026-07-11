@@ -1,4 +1,7 @@
 //! One-sided Jacobi SVD (cyclic, **unpreconditioned**) for f64 on wasm — a
+//! **Status: measured and KILLED 2026-07-10** — 12–15 sweeps at n≤512 =
+//! 0.1–0.2× scipy on the runner (docs/research-svd-wasm-2026-07.md). Kept
+//! as the evidence artifact behind that verdict; not a shipping path.
 //! PROBE to decide whether the full preconditioned build is worth it
 //! (docs/research-svd-wasm-2026-07.md). The runner roofline showed faer's
 //! bidiag→DC pipeline spends ~70% of its time on the DC-solve + vector
