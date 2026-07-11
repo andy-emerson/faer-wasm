@@ -529,6 +529,37 @@ pub extern "C" fn run_eigvals_hk() -> f64 {
     w_re[0] + w_im[n - 1]
 }
 
+// Fix-3 profiling: faer matmul at the multishift sweep's accumulated-update
+// shapes -- C(nb x ib) = U2^T(nb x nb) * A(nb x ib) plus the copy-back the
+// sweep does after every such call. At n=128 the sweep uses nb ~ 24 and
+// chunks ib <= wh cols; if per-call dispatch overhead dominates these tiny
+// gemms, that's the 8x-per-sweep deficit. One export call = `reps`
+// matmul+copy pairs so node-side timing amortizes its own overhead.
+#[no_mangle]
+pub extern "C" fn run_sweep_gemm(nb: usize, ib: usize, reps: usize) -> f64 {
+    use faer::linalg::matmul::matmul;
+    use faer::Accum;
+    let s = state();
+    let n = s.a.nrows();
+    let nb = nb.min(n);
+    let ib = ib.min(n);
+    let u2 = s.a.as_ref().submatrix(0, 0, nb, nb);
+    let mut a_slice = s.b.as_ref().submatrix(0, 0, nb, ib).to_owned();
+    let mut wh = Mat::<f64>::zeros(nb, ib);
+    for _ in 0..reps.max(1) {
+        matmul(
+            wh.as_mut(),
+            Accum::Replace,
+            u2.transpose(),
+            a_slice.as_ref(),
+            1.0,
+            Par::Seq,
+        );
+        a_slice.copy_from(wh.as_ref());
+    }
+    a_slice[(0, 0)] + a_slice[(nb - 1, ib - 1)]
+}
+
 // Iteration-count probe: AED calls and multishift sweeps for one solve,
 // packed as aed*100000 + sweeps. Distinguishes "faer converges slower"
 // (count explosion) from "each sweep is slower" (counts match LAPACK's
