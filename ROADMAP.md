@@ -17,12 +17,15 @@ pulp already ships a complete wasm backend (`Simd128` + `RelaxedSimd` with
 real `f64x2.mul` / `relaxed_madd` in the output. The `rayon` feature does not
 build on wasm (`atomic-wait` has no port); `Par::Seq` is first-class.
 
-**Prime directive: keep the carry thin.** Strategy settled 2026-07-08:
-nothing is submitted upstream (Andy's decision — do not revisit
-unprompted). We vendor the minimum patch set against a pinned upstream
-base, re-verify on every faer release, and drop patches the moment a
-release doesn't need them. New capability is built *alongside* faer
-(companion crates / consumer shim over public APIs), not inside it.
+**Prime directive: keep the carry thin.** Upstreaming is de-prioritized,
+not forbidden (Andy, 2026-07-11, revising the 2026-07-08 "nothing goes
+upstream"): nothing is submitted now, but upstream-worthy findings are
+tracked in the **upstream ledger** below and the question reopens when
+the project settles toward completeness. We vendor the minimum patch set
+against a pinned upstream base, re-verify on every faer release, and
+drop patches the moment a release doesn't need them. New capability is
+built *alongside* faer (companion crates / consumer shim over public
+APIs), not inside it.
 
 ## Phase 0 — Carry the enabler ✅ (maintenance mode)
 
@@ -388,6 +391,27 @@ unless the architect raises it.
 atomics) justify more. If demand appears: a `Par` backend over wasm threads
 without `atomic-wait` (busy-wait or `memory.atomic.wait32` where available).
 Not needed for any current consumer; keep as a recorded non-goal until it is.
+
+## Upstream ledger (started 2026-07-11 — de-prioritized, not forbidden)
+
+Everything found so far that would plausibly help upstream, recorded as
+discovered per the revised prime directive. Nothing here is being
+prepared for submission yet; when the project settles, the architect
+picks from this list. Canonical target is Codeberg
+(`codeberg.org/sarah-quinones/faer` — GitHub is a mirror); the archived
+`upstream/` package (fix + regression tests + wasm CI job for 0001) is
+the submission template.
+
+| finding | kind | evidence |
+| - | - | - |
+| `patches/faer-rs/0001`: `(n >> 32)` on 32-bit `usize` is a compile error — faer does not build on ANY 32-bit target (wasm32, armv7, i686) | build fix, 4 lines | ready-made package archived in `upstream/`; CI-verified every push |
+| `patches/pulp/0003`: wasm `RelaxedSimd` complex `mul_add_e`/`mul_e` pass NEON accumulator-first FMA args to accumulator-last `relaxed_madd` — ALL c32/c64 compute wrong under `+relaxed-simd` | correctness fix, 4 lines | root-caused 2026-07-08; `schur_probe_cplx == 3` CI guard; docs/wasm.md §4 |
+| `patches/faer-rs/0004`: `no_std` AED deflation window computes `log2(n/n)` = 0 instead of `n/log2(n)` — eigensolver iterations explode ~50–85× for 150 ≤ n < 590 on every `no_std` build | perf fix, 1 line | iteration counters pre/post on runner; docs/research-eig-wasm-2026-07.md |
+| `patches/faer-rs/0002`: Schur kernels are `pub(crate)` — better framed upstream as a feature request (public Schur API + `trexc`/`trsen` reordering, the `faer-schur` shape) than as the raw visibility patch | API gap | `schur/` crate implements the shape; accuracy CI-tested |
+| latent 64-bit bug: `operator/*` splits `n` into u32 halves then recombines as `n0 as f64 + n1 as f64` without scaling `n1` by 2³² — looks wrong for n ≥ 2³² (intent UNCERTAIN) | bug report candidate | research-faer-wasm-2026-07.md §8, source reading only |
+| blocked multishift QR leaves workspace junk below the subdiagonal of `T` (faer's own EVD never reads it; anyone consuming `T` directly gets garbage) | bug report candidate | found 2026-07-08 building `faer-schur`, which zeroes it; accuracy tests |
+| dead code: `real_schur.rs:837` `if true \|\|` disables the recursive-multishift AED branch — possibly intentional, worth asking | question upstream | source diff vs LAPACK, research-eig-wasm-2026-07.md |
+| blocked Hessenberg has a machine-sensitive cache cliff (7–95× slower than an unblocked kernel at n=1024 across runner instances) | perf report candidate | phase-split probe run 29136868733, cross-checked on 3 machines |
 
 ## Boundary note — what does NOT live in this repo
 

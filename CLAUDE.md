@@ -6,15 +6,19 @@ reimplementation of Julia for WebAssembly), but everything here is scoped
 **language-agnostically** — work only on things any wasm-targeting consumer
 of faer would want.
 
-**Prime directive — thin carry.** Andy decided (2026-07-08) NOT to submit
-anything upstream — do not prepare upstream PRs, issues, or contribution
-material, and do not ask him to file anything. Instead we *carry* the
-minimum: vendor the smallest possible patch set in `patches/`, keep it
-`git am`-clean against the pinned base, and re-verify on every faer
-release. If upstream ever fixes 32-bit builds independently, drop the
-patch. New capability (Schur, Sylvester, …) is built **alongside** faer —
-in companion crates or the consumer's shim over faer's public API — never
-as patches to faer itself unless there is no other way.
+**Prime directive — thin carry.** Upstreaming is **de-prioritized, not
+forbidden** (Andy, 2026-07-11, revising the 2026-07-08 "nothing goes
+upstream"): do not prepare upstream PRs, issues, or contribution material
+now, but **record every upstream-worthy finding** in ROADMAP.md's
+upstream ledger as it is discovered; when the project settles toward
+completeness, the architect decides what moves back upstream. Meanwhile
+we *carry* the minimum: vendor the smallest possible patch set in
+`patches/`, keep it `git am`-clean against the pinned base, and re-verify
+on every faer release. If upstream ever fixes 32-bit builds
+independently, drop the patch. New capability (Schur, Sylvester, …) is
+built **alongside** faer — in companion crates or the consumer's shim
+over faer's public API — never as patches to faer itself unless there is
+no other way.
 
 Start by reading `README.md`, then `ROADMAP.md` (the phased plan — the
 architect picks which phase to work; see the contract below), then
@@ -25,9 +29,10 @@ the LinearAlgebra coverage matrix).
 ## Working contract (adopted 2026-07-08; modeled on Lua2D's AGENTS.md)
 
 **Roles.** Andy is the **architect**: he decides *what* and *why* — scope,
-priorities, trade-offs (e.g. nothing goes upstream; releases adopted on
-our terms). A session is the **engineer**: it proposes *how*, executes
-after agreement, and must not cut the architect out of decisions.
+priorities, trade-offs (e.g. upstreaming deferred to project maturity;
+releases adopted on our terms). A session is the **engineer**: it
+proposes *how*, executes after agreement, and must not cut the architect
+out of decisions.
 
 **Every pass, three steps.** (1) Report current state honestly,
 uncertainties and failures included — the ROADMAP and the status artifact
@@ -92,10 +97,13 @@ Current sizes are tabulated in `docs/wasm.md` §3.
 
 ## Upstream policy
 
-**Shelved by decision, not oversight.** A complete Phase 0 contribution
+**Deferred by decision, not oversight** (revised 2026-07-11:
+de-prioritized, no longer forbidden). A complete Phase 0 contribution
 (fix + regression tests + wasm CI job) was prepared and archived under
-`upstream/`; Andy chose not to submit it. Leave it archived, don't extend
-it, and don't revisit the decision unless he raises it.
+`upstream/`. Leave it archived and don't extend it for now — it becomes
+the submission template when the upstreaming window opens. Candidates
+accumulate in ROADMAP.md's **upstream ledger**; the architect decides
+when the project has settled enough to start sending things back.
 
 **Release policy (Andy, 2026-07-08): upstream is a resource, not an
 obligation.** Evaluate each faer release; adopt it (re-pin, re-apply
