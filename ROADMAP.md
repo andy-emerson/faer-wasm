@@ -288,8 +288,21 @@ items below, with the **tuning freeze** in force until all of them exist,
 then one global replication-graded tuning pass.
 
 1. **Schur campaign** (the first advanced function; mirrors the eigvals
-   playbook). (a) Add Schur real+c64 to the replication gate incl.
-   n=1024 — baseline to standard (current informal: ~0.4–0.6× scipy).
+   playbook). **Deep research done 2026-07-11**
+   (`docs/research-schur-wasm-2026-07.md`, 21/25 claims 3-vote
+   confirmed): the eigvals→Schur delta is exactly want_t range-widening
+   + Z updates; LAPACK holds it to ~1.26× via accumulated-U gemm
+   batching (inner dim only 2·NS ≈ 32–128 — whether that pays at our
+   gemm≈2×-flat regime is THE open measurement); the opponent runs
+   verbatim reference-netlib for the whole Schur path (same soft bar as
+   QR); no serial post-2015 replacement exists (StarNEig =
+   concurrency-only, the QDWH-trap analog; RQR beat only unblocked
+   zlahqr — watch-list note); Kressner LAWN 171 block reordering is a
+   real serial lever (up to 4×, sourced-unverified) if reordering shows
+   up hot; c64's small kernel (zlahqr) is single-shift 2×1 — a different
+   cost model than real. Steps: (a) Add Schur real+c64 to the
+   replication gate incl. n=1024 — baseline to standard (current
+   informal: ~0.4–0.6× scipy).
    (b) Z-accumulating Hessenberg: extend the kernel to form/apply Q from
    its stored reflectors (the reconstruction code shape already exists in
    the test suite); this also removes the shipping Schur's exposure to
