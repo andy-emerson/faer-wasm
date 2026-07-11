@@ -1,9 +1,10 @@
-// EVD (eigvals) phase profile + parameter sweep. Locates faer's 0.3-0.4x
-// eigvals deficit: Hessenberg vs QR-iteration split, scalar-lahqr vs blocked
-// multishift/AED (the path measured 2-13x slower on wasm, 2026-07-09), and
-// whether LAPACK iparmq-style parameters (nibble=14, active-block shift
-// counts) repair the multishift path. Counters (AED calls / sweeps) split
-// "converges slower" from "each sweep slower".
+// EVD/Schur wasm crossover finder (fix-1 of the eigen plan). Post-patch-0004
+// the multishift/AED path is repaired; the remaining cheap win is routing:
+// scalar lahqr wins small n, multishift wins large n, and faer's default
+// blocking_threshold=75 (native-tuned) is far below the wasm crossover.
+// This measures multishift vs lahqr at a fine size grid for the three
+// pipelines we ship (eigvals real, Schur+Z real, Schur+Z c64) so the
+// companion-crate recommended params can pin the measured thresholds.
 //   node evd-tune.mjs <bench-wasm>
 import { readFileSync } from 'node:fs';
 
@@ -35,40 +36,24 @@ async function time(exportName, n, args = []) {
 	return best / 1e6; // ms
 }
 
-async function counters(n, args) {
-	const { instance } = await WebAssembly.instantiate(bytes, {});
-	const e = instance.exports;
-	e.setup(n);
-	const packed = e.run_eigvals_counters(...args);
-	return { aed: Math.floor(packed / 100000), sweeps: packed % 100000 };
-}
-
-// [label, blocking, nibble, profile]
-const VARIANTS = [
-	['default (multishift/AED)', 0, 0, 0],
-	['lahqr-pinned (blocking=max)', 1 << 30, 0, 0],
-	['nibble=14 (LAPACK)', 0, 14, 0],
-	['iparmq shifts/window', 0, 0, 1],
-	['nibble=14 + iparmq', 0, 14, 1],
+const LAHQR = 1 << 30; // blocking above any n => always the scalar kernel
+// [pipeline label, export, extra fixed args]
+const PIPELINES = [
+	['eigvals (real, no Z)', 'run_eigvals_tuned', (b) => [b, 0, 0]],
+	['schur+Z (real)', 'run_schur_tuned', (b) => [b]],
+	['schur+Z (c64)', 'run_schur_c64_tuned', (b) => [b]],
 ];
+const SIZES = [96, 128, 192, 256, 320, 384, 448, 512];
 
-const SIZES = [64, 128, 256, 512];
-console.log('# EVD eigvals phase profile + parameter sweep (on-runner)');
-console.log('# eigenvalues-only pipeline (no Z, want_t=false), min-of-N ms');
-for (const n of SIZES) {
-	console.log(`\nn=${n}:`);
-	const hess = await time('run_hess_only', n);
-	const evd = await time('run_gen_evd', n);
-	console.log(`  hessenberg only         ${hess.toFixed(3)} ms`);
-	console.log(`  faer eigenvalues()      ${evd.toFixed(3)} ms   -> hess is ${((hess / evd) * 100).toFixed(0)}% of eigvals`);
-	let baseline = null;
-	for (const [label, blocking, nibble, profile] of VARIANTS) {
-		const ms = await time('run_eigvals_tuned', n, [blocking, nibble, profile]);
-		if (baseline === null) baseline = ms;
-		const { aed, sweeps } = await counters(n, [blocking, nibble, profile]);
-		const rel = ` (${(baseline / ms).toFixed(2)}x vs default)`;
-		console.log(
-			`  ${label.padEnd(28)} ${ms.toFixed(3)} ms${rel}  [aed=${aed} sweeps=${sweeps}]`,
-		);
+console.log('# EVD/Schur multishift-vs-lahqr crossover grid (on-runner, post-0004)');
+console.log('# blocking=0 -> faer default 75 (multishift for all sizes below); LAHQR = pinned scalar');
+for (const [label, exp, argf] of PIPELINES) {
+	console.log(`\n## ${label}`);
+	console.log('| n | multishift | lahqr | winner |');
+	for (const n of SIZES) {
+		const ms = await time(exp, n, argf(0));
+		const lq = await time(exp, n, argf(LAHQR));
+		const w = ms < lq ? `multishift ${(lq / ms).toFixed(2)}x` : `lahqr ${(ms / lq).toFixed(2)}x`;
+		console.log(`| ${n} | ${ms.toFixed(2)} ms | ${lq.toFixed(2)} ms | ${w} |`);
 	}
 }
