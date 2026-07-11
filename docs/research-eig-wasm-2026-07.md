@@ -254,6 +254,42 @@ scipy's 10.4 total. Fix-3 territory: make the iteration itself
 competitive at small n (faer's multishift sweep is ~8× off LAPACK's
 per-sweep at 128, and lahqr's Givens application is scalar).
 
+## n=1024 (architect direction) + the faer-blocked-Hessenberg cliff
+
+The eig scoreboard now includes n=1024 (replication gate). Verdicts
+(pyodide run 29136128363): **eigvals_hk WINS 1.18×, ranges separate**
+(2261.6 [2239.9..2338.1] vs scipy ~2670) — and the tiny-gemm hypothesis's
+prediction held: our multishift's relative position improves at 1024
+where the sweep's accumulated blocks are ~4× bigger.
+
+The same run exposed **a machine-sensitive cliff in faer's blocked
+Hessenberg** (the n≥256 GQvdG path): eigvals_wk (faer-hess front-end)
+measured 52.4 s/call on that runner vs 4.1 s dev-box for the same
+deterministic binary, while hk stayed 2.26 s in the same alternating
+rounds. The phase-split probe (run 29136868733, a different runner
+instance) pinned it:
+
+| phase @ runner | n=512 | n=1024 |
+| - | -: | -: |
+| faer blocked Hessenberg | 221.4 ms | **3690.9 ms** |
+| kernel Hessenberg (fix-2) | 69.8 ms | **529.4 ms** |
+| eigvals wk (faer hess) | 597.6 ms | 5480.8 ms |
+| eigvals hk (kernel hess) | 447.1 ms | 2053.0 ms |
+
+faer's blocked Hessenberg is 3.2× slower than our kernel at 512 and
+**7.0× at 1024 on this machine — and ~95× on the weaker pyodide-run
+machine** (~50 s inferred): a cache-capacity cliff with enormous
+machine-to-machine spread. Our flat kernel is stable across machines
+(529 ms here; hk totals 2.05 vs 2.26 s across the two runners). Fifth
+instance of the project pattern: faer's native-tuned machinery (LU
+recursion, SVD thresholds, AED-window bug, multishift-vs-lahqr pin, now
+blocked Hessenberg) misbehaving on wasm/runner hardware, caught only by
+measurement. The shipping path (hk) never touches the cliff.
+
+Same run re-validated the 480 crossover on a third machine (lahqr
+through 448, multishift from 512, all three pipelines; c64@512 is
+borderline at 1.04× lahqr — acceptable within the threshold's margin).
+
 ## Status / next
 
 - [x] Patch 0004 minted, round-trip verified (`git apply` clean on
