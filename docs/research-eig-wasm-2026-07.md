@@ -227,12 +227,30 @@ on similarity/orthogonality/eigenvalue-preservation).
 | 256 | 181.3 ms | 135.7 ms | **75.1 ms** | 85.3 ms | **1.14× WIN** |
 | 512 | 853.9 ms | 854.3 ms | **568.9 ms** | 591.7 ms | **1.04× win** |
 
-eigvals arc: 0.1–0.4× (start) → 0.7× (patch 0004) → **0.8–1.14×**
-(fixes 1+2). The kernel Hessenberg measured ~2.6× faer's reduction in the
-pipeline delta (wk−hk = 60.6 ms at n=256 vs faer-hess 47.7). Remaining
-gap is all small-n QR iteration: at n=64 scipy's entire dgeev (1.6 ms) is
-2× faster than our lahqr phase alone; at 128 lahqr ≈ 11 ms of our 14.3 vs
-scipy's 11.1 total. That is fix-3 territory: make the iteration itself
+**Replication gate (architect challenge: "I think they are noise").** The
+single-run margins above were inside measured cross-run variance (same
+op@512 spanned 598/836/854 ms across runner instances), so the claims
+were re-tried under a replication protocol now permanent in
+`pyodide-vs-faer.mjs`: 5 independent rounds per size, alternating
+faer/scipy so machine drift hits both sides, WIN/LOSS only when the
+min..max ranges separate. Verdicts (run 29135544681):
+
+| n | scipy med [range] | eigvals_hk med [range] | verdict |
+| - | - | - | - |
+| 64 | 1.51 [1.51..1.52] | 2.99 [2.98..2.99] | **LOSS** 0.51× |
+| 128 | 10.37 [10.35..10.41] | 13.80 [13.75..13.81] | **LOSS** 0.75× |
+| 256 | 79.73 [79.44..79.94] | 72.93 [71.01..73.31] | **WIN 1.09×** (ranges separate) |
+| 512 | 561.6 [559.6..561.9] | 553.4 [535.9..606.0] | **OVERLAP — parity, no claim** |
+
+So the honest scoreboard after fixes 1+2: eigvals arc 0.1–0.4× (start)
+→ **0.51× / 0.75× / 1.09×-win / parity** — the 256 win replicates with
+separated ranges; the 512 "win" was noise (the architect called it), it
+is parity. Within-machine ranges are tight for scipy and for our lahqr
+path, but our multishift at 512 has intrinsic spread (536–606 ms) —
+convergence-path sensitivity worth noting for fix-3. Remaining gap is
+all small-n QR iteration: at n=64 scipy's entire dgeev (1.5 ms) is 2×
+faster than our lahqr phase alone; at 128 lahqr ≈ 11 ms of our 13.8 vs
+scipy's 10.4 total. Fix-3 territory: make the iteration itself
 competitive at small n (faer's multishift sweep is ~8× off LAPACK's
 per-sweep at 128, and lahqr's Givens application is scalar).
 
