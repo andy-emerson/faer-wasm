@@ -329,7 +329,20 @@ then one global replication-graded tuning pass.
    (8 lanes, revisit when engines ship it); Demmel serial block-Jacobi
    Part Two (the one live SVD research thread); each upstream faer
    release re-evaluated per the release policy (0004 especially — drop
-   the patch if upstream fixes the no_std window).
+   the patch if upstream fixes the no_std window); **the 2025–26
+   fast-matmul wave** (architect flag 2026-07-11, recorded unmeasured):
+   AlphaEvolve's 4×4-in-48-mults (May 2025) has been rationalized to
+   real/rational coefficients (arXiv 2506.13242 / 2602.13171 /
+   2603.18699), flip-graph search improved the known rank for 207 small
+   formats ≤ 16×16×16 (arXiv 2606.02480, June 2026), and
+   alternative-basis Strassen (Numerische Mathematik, 2026) attains the
+   optimal leading coefficient *with* Strassen-class error bounds.
+   Candidate large-n matmul lever only: a 1-level
+   alternative-basis/Strassen–Winograd wrapper over faer-gemm blocks
+   saves ≤ 12.5% of mults at n ≥ 1024 for O(n²) extra adds/traffic —
+   cheap measure-first probe, but it changes the error profile
+   (norm-wise, not component-wise backward stable), so if it ever wins
+   it ships as an opt-in path, never the default gemm.
 
 ## Considered option — WebGPU for the large-n tail (architect Q, 2026-07-09; deferred)
 
