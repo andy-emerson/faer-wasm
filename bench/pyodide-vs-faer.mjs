@@ -157,6 +157,11 @@ writeFileSync('pyodide-vs-faer-results.json', JSON.stringify(rows, null, '\t'));
 // ALTERNATING faer and scipy so machine drift hits both sides; a WIN/LOSS
 // verdict requires the min..max ranges to separate, otherwise OVERLAP.
 const ROUNDS = 5;
+// architect direction 2026-07-11: the eig scoreboard includes n=1024 (the
+// main grid stays at <=512; the replication gate is the eig record).
+// 1024 exceeds the measured crossover grid (which stopped at 512) — the
+// routing sends it to multishift, and this measures that extrapolation.
+const REP_SIZES = [...SIZES, 1024];
 const REP_OPS = [
 	['eigvals_hk', 'run_eigvals_hk'],
 	['eigvals_wk', 'run_eigvals_wk'],
@@ -167,7 +172,7 @@ const stats = (xs) => {
 };
 const fmtR = (r) => `${r.med.toFixed(2)} [${r.min.toFixed(2)}..${r.max.toFixed(2)}]`;
 console.log(`\n## eig replication gate (${ROUNDS} alternating rounds, median [min..max] ms)`);
-for (const n of SIZES) {
+for (const n of REP_SIZES) {
 	await py.runPythonAsync(`setup(${n})`);
 	const faer = Object.fromEntries(REP_OPS.map(([k]) => [k, []]));
 	const scipyMs = [];
