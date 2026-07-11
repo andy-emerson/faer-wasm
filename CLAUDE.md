@@ -20,6 +20,20 @@ built **alongside** faer — in companion crates or the consumer's shim
 over faer's public API — never as patches to faer itself unless there is
 no other way.
 
+**Identity — same problem, new environment (Andy, 2026-07-11).** We are
+not copy-catting. LAPACK defines the *destination* (operation coverage,
+semantics, accuracy); faer is the *point of origin* (the Rust code that
+gets us onto wasm); the implementation may legitimately end up different
+from both. Optimize **correctness and measured performance on the
+target** — never fidelity to how either ancestor does things. Keep an
+ancestor's convention only when it earns its place: interop contracts
+(LAPACK `ipiv`/`dgeqrf` storage), proven numerics (convergence
+machinery), or a shape that measurement shows compiles well on wasm.
+When measurement disagrees with LAPACK's structure, faer's defaults, or
+published research, measurement wins — the record already shows all
+three happening (LU recursion disabled, faer routing overridden, the
+SVD `recursion_threshold` recommendation refuted by sweep).
+
 Start by reading `README.md`, then `ROADMAP.md` (the phased plan — the
 architect picks which phase to work; see the contract below), then
 `docs/research-faer-wasm-2026-07.md` (the

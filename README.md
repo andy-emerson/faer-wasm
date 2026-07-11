@@ -9,6 +9,22 @@ candidates are tracked in ROADMAP.md's upstream ledger for when the
 project settles; new capability is built alongside faer, not inside it.
 Empirical basis in docs/.
 
+**Identity — same problem, new environment (Andy, 2026-07-11).** This is
+not a port and not a copy-cat. **LAPACK defines the destination**: the
+operation set, its semantics, and the accuracy contract. **faer is the
+point of origin**: the Rust codebase that reaches wasm, and the engine we
+keep wherever it measures best (gemm above all). **The implementation is
+free to be neither**: every structural choice — blocking, recursion,
+panel shape, crossovers — is decided by measurement on the target, never
+by fidelity to how LAPACK or faer happens to do it. Where our kernels
+resemble LAPACK internals (flat loops over contiguous columns) it is
+convergent evolution — that code shape is what wasm engines compile well
+— and where measurement disagrees with either ancestor, measurement wins
+(LU recursion: built, then disabled; QR blocking: refused; blocked
+Hessenberg: replaced). The result is a growing wasm-shaped layer
+(`kernels/`, `schur/`) over faer's foundation that may end up different
+from both ancestors, and that's the point.
+
 ## Contents
 
 - `ROADMAP.md` — the phased plan. Phases 0, 1, 3 (the carried fix, CI
