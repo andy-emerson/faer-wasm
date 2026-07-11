@@ -266,6 +266,56 @@ to one global, replication-graded tuning pass at the end.
       "lean flat panel, scipy parity ~n=256" with no recursion claim to
       defend. Gated (`gate.mjs`). Docs: benchmarks Runs 5–7.
 
+## Next sessions — build-out plan (drafted 2026-07-11, for architect review)
+
+Sequence set by the architect: sweep ✅ → f32/c32 refactor ✅ → the
+items below, with the **tuning freeze** in force until all of them exist,
+then one global replication-graded tuning pass.
+
+1. **Schur campaign** (the first advanced function; mirrors the eigvals
+   playbook). (a) Add Schur real+c64 to the replication gate incl.
+   n=1024 — baseline to standard (current informal: ~0.4–0.6× scipy).
+   (b) Z-accumulating Hessenberg: extend the kernel to form/apply Q from
+   its stored reflectors (the reconstruction code shape already exists in
+   the test suite); this also removes the shipping Schur's exposure to
+   faer's blocked-Hessenberg machine cliff. (c) Z-accumulating iteration:
+   the hqr kernel's `want_t=true` + Z sibling — Z updates are contiguous
+   3-column axpys, friendlier than the eigvals shapes. (d) Benchmark each
+   step. (e) Decision point: c64 kernel twins (a NEW build — no complex
+   hand kernels exist at either precision). Projection from measured
+   structure: parity very likely, wins probable below n=512 (scipy pays
+   1.26× to go eigvals→Schur; faer currently pays 2.6×).
+2. **Eigenvectors (nonsymmetric `eig`)** — needs Schur first:
+   `trevc`-shaped back-substitution on T + back-transform through Z, both
+   kernel-shaped; scoreboard row vs `np.linalg.eig`.
+3. **SVD small-n rotation path** — profile how much of faer's small-n SVD
+   (its worst losses: 0.2× @64, 0.4–0.5× @128) sits in the scalar
+   `qr_algorithm` rotation application; if large, reuse the rotation
+   kernel minted in 1(c). Plausible transfer, unverified — profile before
+   building (the algorithm-replacement door stays closed per the
+   adversarially-verified research).
+4. **Symmetric eigen probe** — never scoreboarded or profiled; add the
+   row + a phase profile. Cheap, and the 0004 precedent says unprofiled
+   faer pipelines can hide landmines.
+5. **Global tuning pass** (ends the freeze): re-sweep every threshold
+   against the final shaped implementations — hqr-vs-multishift crossover
+   (the 480 was measured against pre-kernel lahqr; hqr@512 never
+   measured), LU/QR parameters, all f32 twins (halved cache footprint
+   moves every crossover) — replication-graded, full 64–1024 grid.
+6. **Packaging/budget decision (architect)**: f32/c32 monomorphizations
+   cannot fit the 1,014 KB full-variant budget (c64 alone cost +443 KB);
+   choose per-precision build features + new witness variants/budgets vs
+   a deliberate budget raise. Note: adding CI variants needs
+   workflow-file edits the current session token cannot push (lost
+   `workflow` scope mid-session 2026-07-11) — architect pushes those or
+   the token gets refreshed.
+7. **Watch list**: faer's generic f32 gemm gains only 1.1–1.3× over f64
+   on wasm (far off lane-doubling — a shaping target); wasm FP16 proposal
+   (8 lanes, revisit when engines ship it); Demmel serial block-Jacobi
+   Part Two (the one live SVD research thread); each upstream faer
+   release re-evaluated per the release policy (0004 especially — drop
+   the patch if upstream fixes the no_std window).
+
 ## Considered option — WebGPU for the large-n tail (architect Q, 2026-07-09; deferred)
 
 The audience logic holds — the people who hit large-n dense linear
