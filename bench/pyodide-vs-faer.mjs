@@ -150,3 +150,61 @@ for (const r of rows) {
 const geo = rows.reduce((s, r) => s + Math.log(r.speedup), 0) / rows.length;
 console.log(`\ngeomean speedup: ${Math.exp(geo).toFixed(2)}×`);
 writeFileSync('pyodide-vs-faer-results.json', JSON.stringify(rows, null, '\t'));
+
+// ---- eig replication gate (architect challenge 2026-07-11: single-run
+// eigvals margins were inside measured cross-run variance — same op@512
+// spanned 598/836/854 ms across runner instances). 5 independent rounds,
+// ALTERNATING faer and scipy so machine drift hits both sides; a WIN/LOSS
+// verdict requires the min..max ranges to separate, otherwise OVERLAP.
+const ROUNDS = 5;
+const REP_OPS = [
+	['eigvals_hk', 'run_eigvals_hk'],
+	['eigvals_wk', 'run_eigvals_wk'],
+];
+const stats = (xs) => {
+	const s = [...xs].sort((x, y) => x - y);
+	return { min: s[0], med: s[Math.floor(s.length / 2)], max: s[s.length - 1] };
+};
+const fmtR = (r) => `${r.med.toFixed(2)} [${r.min.toFixed(2)}..${r.max.toFixed(2)}]`;
+console.log(`\n## eig replication gate (${ROUNDS} alternating rounds, median [min..max] ms)`);
+for (const n of SIZES) {
+	await py.runPythonAsync(`setup(${n})`);
+	const faer = Object.fromEntries(REP_OPS.map(([k]) => [k, []]));
+	const scipyMs = [];
+	for (let r = 0; r < ROUNDS; r++) {
+		for (const [key, exp] of REP_OPS) {
+			faer[key].push((await timeFaerOnce(exp, n)) / 1e6);
+		}
+		scipyMs.push((await py.runPythonAsync('bench(lambda: np.linalg.eigvals(a), reps=1)')) / 1e6);
+	}
+	const sc = stats(scipyMs);
+	console.log(`\nn=${n}: scipy eigvals ${fmtR(sc)}`);
+	for (const [key] of REP_OPS) {
+		const st = stats(faer[key]);
+		const verdict =
+			st.max < sc.min
+				? `WIN (ranges separate, ${(sc.med / st.med).toFixed(2)}x)`
+				: st.min > sc.max
+					? `LOSS (ranges separate, ${(sc.med / st.med).toFixed(2)}x)`
+					: `OVERLAP (median ratio ${(sc.med / st.med).toFixed(2)}x) — no claim`;
+		console.log(`  ${key.padEnd(11)} ${fmtR(st)}  -> ${verdict}`);
+	}
+}
+
+// single-round faer timing (fresh instance, adaptive iters, NOT min-of-3 —
+// each replication round is one independent sample)
+async function timeFaerOnce(exportName, n) {
+	const { instance } = await WebAssembly.instantiate(bytes, {});
+	const e = instance.exports;
+	e.setup(n);
+	const f = () => e[exportName]();
+	let sink = f();
+	let t0 = performance.now();
+	sink += f();
+	const per = Math.max((performance.now() - t0) / 1e3, 1e-9);
+	const iters = Math.min(Math.max(Math.ceil(0.15 / per), 3), 100);
+	t0 = performance.now();
+	for (let i = 0; i < iters; i++) sink += f();
+	if (!Number.isFinite(sink)) throw new Error(`${exportName}(n=${n}): non-finite`);
+	return ((performance.now() - t0) * 1e6) / iters; // ns
+}
