@@ -13,6 +13,7 @@ publish = false
 faer = { path = "../faer-rs/faer", default-features = false, features = ["linalg"] }
 # no_std sqrt for the QR reflector norm (f64::sqrt is std-only); already in
 # faer's tree so no new transitive dependency
+faer-traits = { path = "../faer-rs/faer-traits", default-features = false }
 libm = { version = "0.2", default-features = false }
 
 [profile.release]

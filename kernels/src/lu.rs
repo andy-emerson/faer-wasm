@@ -1,4 +1,5 @@
-//! Blocked LU with partial pivoting, `dgetrf`-shaped, for f64 on wasm.
+//! Blocked LU with partial pivoting, `dgetrf`-shaped, on wasm. Generic
+//! over [`WasmScalar`] (f64/f32) since the f32/c32 phase.
 //!
 //! Structure per block step `j` (block width `nb`):
 //!   1. **panel**: factor columns `j..j+kb` over rows `j..m` with flat
@@ -17,45 +18,7 @@ use faer::linalg::matmul::matmul;
 use faer::prelude::*;
 use faer::{Accum, MatMut};
 
-/// `dst[i] -= src[i] * alpha` — the panel/trsm/solve workhorse. On wasm this
-/// is an explicit simd128 kernel (2 lanes × 2-unrolled; `v128_load`/`store`
-/// are alignment-free by spec); elsewhere a plain scalar loop. This is the
-/// "shaping": the same axpy faer expresses through generic SIMD dispatch,
-/// written the way the target actually executes it.
-#[inline(always)]
-unsafe fn axpy(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
-	#[cfg(target_arch = "wasm32")]
-	{
-		axpy_simd128(dst, src, alpha, len);
-	}
-	#[cfg(not(target_arch = "wasm32"))]
-	{
-		for i in 0..len {
-			*dst.add(i) -= *src.add(i) * alpha;
-		}
-	}
-}
-
-#[cfg(target_arch = "wasm32")]
-#[target_feature(enable = "simd128")]
-unsafe fn axpy_simd128(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
-	use core::arch::wasm32::*;
-	let va = f64x2_splat(alpha);
-	let mut i = 0usize;
-	while i + 4 <= len {
-		let d0 = v128_load(dst.add(i) as *const v128);
-		let s0 = v128_load(src.add(i) as *const v128);
-		let d1 = v128_load(dst.add(i + 2) as *const v128);
-		let s1 = v128_load(src.add(i + 2) as *const v128);
-		v128_store(dst.add(i) as *mut v128, f64x2_sub(d0, f64x2_mul(s0, va)));
-		v128_store(dst.add(i + 2) as *mut v128, f64x2_sub(d1, f64x2_mul(s1, va)));
-		i += 4;
-	}
-	while i < len {
-		*dst.add(i) -= *src.add(i) * alpha;
-		i += 1;
-	}
-}
+use crate::scalar::WasmScalar;
 
 /// Block width. Swept on wasm 2026-07-09 (see docs/benchmarks-2026-07.md):
 /// panels narrower than ~24 waste gemm efficiency, wider ones spend too
@@ -65,7 +28,7 @@ pub const RECOMMENDED_BLOCK_SIZE: usize = 64;
 /// Factors a square `A` in place into `P·A = L·U` (`L` unit lower, `U`
 /// upper, both stored in `a`), recording LAPACK-style pivots in `piv`.
 /// `nb = 0` uses [`RECOMMENDED_BLOCK_SIZE`].
-pub fn lu_factor_in_place(mut a: MatMut<'_, f64>, piv: &mut [usize], nb: usize) {
+pub fn lu_factor_in_place<T: WasmScalar>(mut a: MatMut<'_, T>, piv: &mut [usize], nb: usize) {
 	let n = a.nrows();
 	assert!(a.ncols() == n, "square only for now");
 	assert!(piv.len() >= n);
@@ -114,9 +77,9 @@ pub fn lu_factor_in_place(mut a: MatMut<'_, f64>, piv: &mut [usize], nb: usize) 
 					}
 				}
 				let d = *col.add(jc);
-				if d != 0.0 {
+				if d != T::ZERO {
 					// scale the multipliers
-					let inv = 1.0 / d;
+					let inv = T::ONE / d;
 					let mut i = jc + 1;
 					while i < n {
 						*col.add(i) *= inv;
@@ -128,8 +91,8 @@ pub fn lu_factor_in_place(mut a: MatMut<'_, f64>, piv: &mut [usize], nb: usize) 
 				while l < kb {
 					let colr = base.add((j + l) * cs);
 					let alk = *colr.add(jc);
-					if alk != 0.0 {
-						axpy(colr.add(jc + 1), col.add(jc + 1), alk, n - jc - 1);
+					if alk != T::ZERO {
+						T::axpy(colr.add(jc + 1), col.add(jc + 1), alk, n - jc - 1);
 					}
 					l += 1;
 				}
@@ -163,9 +126,9 @@ pub fn lu_factor_in_place(mut a: MatMut<'_, f64>, piv: &mut [usize], nb: usize) 
 					let xc = base.add(c * cs);
 					for k in 0..kb {
 						let xk = *xc.add(j + k);
-						if xk != 0.0 {
+						if xk != T::ZERO {
 							let lc = base.add((j + k) * cs);
-							axpy(xc.add(j + k + 1), lc.add(j + k + 1), xk, kb - k - 1);
+							T::axpy(xc.add(j + k + 1), lc.add(j + k + 1), xk, kb - k - 1);
 						}
 					}
 					c += 1;
@@ -178,7 +141,7 @@ pub fn lu_factor_in_place(mut a: MatMut<'_, f64>, piv: &mut [usize], nb: usize) 
 			let (_, a12_full, a21_full, a22) = a.rb_mut().split_at_mut(j + kb, j + kb);
 			let a12 = a12_full.rb().subrows(j, kb);
 			let a21 = a21_full.rb().subcols(j, kb);
-			matmul(a22, Accum::Add, a21, a12, -1.0, Par::Seq);
+			matmul(a22, Accum::Add, a21, a12, -T::ONE, Par::Seq);
 		}
 
 		j += kb;
@@ -188,7 +151,7 @@ pub fn lu_factor_in_place(mut a: MatMut<'_, f64>, piv: &mut [usize], nb: usize) 
 /// Solves `A·x = b` in place using factors from [`lu_factor_in_place`]:
 /// applies the row swaps to `b`, then unit-lower forward substitution and
 /// upper back substitution. `b` is a single column.
-pub fn lu_solve_in_place(a: MatRef<'_, f64>, piv: &[usize], b: &mut [f64]) {
+pub fn lu_solve_in_place<T: WasmScalar>(a: MatRef<'_, T>, piv: &[usize], b: &mut [T]) {
 	let n = a.nrows();
 	assert!(a.ncols() == n && b.len() == n && piv.len() >= n);
 	assert!(a.row_stride() == 1);
@@ -204,9 +167,9 @@ pub fn lu_solve_in_place(a: MatRef<'_, f64>, piv: &[usize], b: &mut [f64]) {
 		// L y = P b (unit lower)
 		for k in 0..n {
 			let yk = b[k];
-			if yk != 0.0 {
+			if yk != T::ZERO {
 				let col = base.add(k * cs);
-				axpy(b.as_mut_ptr().add(k + 1), col.add(k + 1), yk, n - k - 1);
+				T::axpy(b.as_mut_ptr().add(k + 1), col.add(k + 1), yk, n - k - 1);
 			}
 		}
 		// U x = y
@@ -214,8 +177,8 @@ pub fn lu_solve_in_place(a: MatRef<'_, f64>, piv: &[usize], b: &mut [f64]) {
 			let col = base.add(k * cs);
 			let xk = b[k] / *col.add(k);
 			b[k] = xk;
-			if xk != 0.0 {
-				axpy(b.as_mut_ptr(), col, xk, k);
+			if xk != T::ZERO {
+				T::axpy(b.as_mut_ptr(), col, xk, k);
 			}
 		}
 	}
@@ -261,7 +224,7 @@ pub const RECOMMENDED_TRSM_BASE: usize = 256;
 /// Same output contract as [`lu_factor_in_place`] (LAPACK ipiv semantics):
 /// identical pivot sequence, factors equal up to gemm reassociation.
 /// `crossover = 0` uses [`RECOMMENDED_CROSSOVER`].
-pub fn lu_factor_recursive_in_place(a: MatMut<'_, f64>, piv: &mut [usize], crossover: usize) {
+pub fn lu_factor_recursive_in_place<T: WasmScalar>(a: MatMut<'_, T>, piv: &mut [usize], crossover: usize) {
 	lu_factor_recursive_in_place_tuned(a, piv, crossover, RECOMMENDED_TRSM_BASE);
 }
 
@@ -270,8 +233,8 @@ pub fn lu_factor_recursive_in_place(a: MatMut<'_, f64>, piv: &mut [usize], cross
 /// `trsm_base = 0` → [`RECOMMENDED_TRSM_BASE`]. Consumers should call the
 /// non-`_tuned` entry; this exists so the bench harness can sweep on the
 /// runner rather than trusting dev-box numbers.
-pub fn lu_factor_recursive_in_place_tuned(
-	mut a: MatMut<'_, f64>,
+pub fn lu_factor_recursive_in_place_tuned<T: WasmScalar>(
+	mut a: MatMut<'_, T>,
 	piv: &mut [usize],
 	crossover: usize,
 	trsm_base: usize,
@@ -293,7 +256,7 @@ pub fn lu_factor_recursive_in_place_tuned(
 
 /// swap rows r1 <-> r2 across columns [c0, c1)
 #[inline(always)]
-unsafe fn swap_rows(base: *mut f64, cs: usize, c0: usize, c1: usize, r1: usize, r2: usize) {
+unsafe fn swap_rows<T: WasmScalar>(base: *mut T, cs: usize, c0: usize, c1: usize, r1: usize, r2: usize) {
 	let mut c = c0;
 	while c < c1 {
 		let pc = base.add(c * cs);
@@ -307,8 +270,8 @@ unsafe fn swap_rows(base: *mut f64, cs: usize, c0: usize, c1: usize, r1: usize, 
 /// factor the `w`-wide block starting at diagonal position `d` over rows
 /// `d..m`, columns `d..d+w`, recording absolute pivots; swaps are applied
 /// only within columns [d, d+w) — the caller handles siblings
-unsafe fn lu_rec(
-	mut a: MatMut<'_, f64>,
+unsafe fn lu_rec<T: WasmScalar>(
+	mut a: MatMut<'_, T>,
 	cs: usize,
 	d: usize,
 	w: usize,
@@ -340,8 +303,8 @@ unsafe fn lu_rec(
 				swap_rows(base, cs, d, d + w, jc, p);
 			}
 			let dv = *col.add(jc);
-			if dv != 0.0 {
-				let inv = 1.0 / dv;
+			if dv != T::ZERO {
+				let inv = T::ONE / dv;
 				let mut i = jc + 1;
 				while i < m {
 					*col.add(i) *= inv;
@@ -352,8 +315,8 @@ unsafe fn lu_rec(
 			while l < w {
 				let colr = base.add((d + l) * cs);
 				let alk = *colr.add(jc);
-				if alk != 0.0 {
-					axpy(colr.add(jc + 1), col.add(jc + 1), alk, m - jc - 1);
+				if alk != T::ZERO {
+					T::axpy(colr.add(jc + 1), col.add(jc + 1), alk, m - jc - 1);
 				}
 				l += 1;
 			}
@@ -382,7 +345,7 @@ unsafe fn lu_rec(
 		let a21 = a21_full.rb().subcols(d, n1);
 		// a22_full: rows d+n1..m × cols d+n1.. ; want cols 0..(w-n1)
 		let a22 = a22_full.subcols_mut(0, w - n1);
-		matmul(a22, Accum::Add, a21, a12, -1.0, Par::Seq);
+		matmul(a22, Accum::Add, a21, a12, -T::ONE, Par::Seq);
 	}
 	// 5. factor the right half over rows d+n1..m
 	lu_rec(a.rb_mut(), cs, d + n1, w - n1, piv, crossover, trsm_base);
@@ -398,7 +361,7 @@ unsafe fn lu_rec(
 /// X = L^{-1} X where L is the unit-lower k×k block at (d, d) and X spans
 /// rows d..d+k, columns [c0, c1). Recursive: diagonal blocks by lean
 /// substitution, the off-diagonal update by gemm.
-unsafe fn trsm_rec(mut a: MatMut<'_, f64>, cs: usize, d: usize, k: usize, c0: usize, c1: usize, trsm_base: usize) {
+unsafe fn trsm_rec<T: WasmScalar>(mut a: MatMut<'_, T>, cs: usize, d: usize, k: usize, c0: usize, c1: usize, trsm_base: usize) {
 	if k <= trsm_base {
 		let base = a.rb_mut().as_ptr_mut();
 		let mut c = c0;
@@ -406,9 +369,9 @@ unsafe fn trsm_rec(mut a: MatMut<'_, f64>, cs: usize, d: usize, k: usize, c0: us
 			let xc = base.add(c * cs);
 			for kk in 0..k {
 				let xk = *xc.add(d + kk);
-				if xk != 0.0 {
+				if xk != T::ZERO {
 					let lc = base.add((d + kk) * cs);
-					axpy(xc.add(d + kk + 1), lc.add(d + kk + 1), xk, k - kk - 1);
+					T::axpy(xc.add(d + kk + 1), lc.add(d + kk + 1), xk, k - kk - 1);
 				}
 			}
 			c += 1;
@@ -424,7 +387,7 @@ unsafe fn trsm_rec(mut a: MatMut<'_, f64>, cs: usize, d: usize, k: usize, c0: us
 		let x1 = x1_full.rb().subrows(d, k1).subcols(c0 - (d + k1), c1 - c0);
 		let l21 = l21_full.rb().subrows(0, k - k1).subcols(d, k1);
 		let x2 = x2_full.subrows_mut(0, k - k1).subcols_mut(c0 - (d + k1), c1 - c0);
-		matmul(x2, Accum::Add, l21, x1, -1.0, Par::Seq);
+		matmul(x2, Accum::Add, l21, x1, -T::ONE, Par::Seq);
 	}
 	// solve bottom: L22 X2
 	trsm_rec(a.rb_mut(), cs, d + k1, k - k1, c0, c1, trsm_base);

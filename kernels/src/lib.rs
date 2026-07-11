@@ -19,6 +19,7 @@
 extern crate alloc;
 
 pub mod hessenberg;
+pub mod scalar;
 pub mod schur_small;
 pub mod lu;
 pub mod qr;

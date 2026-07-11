@@ -21,6 +21,10 @@ struct State {
     ac: Mat<faer::c64>,
     bc: Mat<faer::c64>,
     rhsc: Mat<faer::c64>,
+    // f32 twins (same values as a/b/rhs, cast) for the f32/c32 phase rows
+    a32: Mat<f32>,
+    b32: Mat<f32>,
+    rhs32: Mat<f32>,
 }
 
 struct StateCell(core::cell::UnsafeCell<Option<State>>);
@@ -62,7 +66,10 @@ pub extern "C" fn setup(n: usize) {
     let re = fill(n, 1, 0xD6E8FEB86659FD93);
     let im = fill(n, 1, 0xCA5A826395121157);
     let rhsc = Mat::from_fn(n, 1, |i, j| faer::c64::new(re[(i, j)], im[(i, j)]));
-    unsafe { *STATE.0.get() = Some(State { a, b, sym, rhs, ac, bc, rhsc }) }
+    let a32 = Mat::from_fn(n, n, |i, j| a[(i, j)] as f32);
+    let b32 = Mat::from_fn(n, n, |i, j| b[(i, j)] as f32);
+    let rhs32 = Mat::from_fn(n, 1, |i, j| rhs[(i, j)] as f32);
+    unsafe { *STATE.0.get() = Some(State { a, b, sym, rhs, ac, bc, rhsc, a32, b32, rhs32 }) }
 }
 
 #[no_mangle]
@@ -578,6 +585,92 @@ pub extern "C" fn run_eigvals_k3() -> f64 {
         );
         assert!(info == 0, "eigvals_k3 (multishift) did not converge");
         w_re[0] + w_im[n - 1]
+    }
+}
+
+// ---- f32 rows (f32/c32 phase, architect direction 2026-07-11): the four
+// headliners in f32 -- ~2x mechanism pair on wasm SIMD128 (4 lanes for
+// compute-bound, half traffic for bandwidth-bound). matmul rides faer's
+// generic f32 path; the rest ride the now-generic kernels.
+#[no_mangle]
+pub extern "C" fn run_matmul_f32() -> f64 {
+    let s = state();
+    let c = &s.a32 * &s.b32;
+    let n = c.nrows();
+    (c[(0, 0)] + c[(n - 1, n - 1)]) as f64
+}
+
+#[no_mangle]
+pub extern "C" fn run_lu_solve_wk_f32() -> f64 {
+    let s = state();
+    let n = s.a32.nrows();
+    let mut f = s.a32.to_owned();
+    let mut piv = alloc::vec![0usize; n];
+    faer_wasm_kernels::lu::lu_factor_recursive_in_place(f.as_mut(), &mut piv, 0);
+    let mut x = alloc::vec![0.0f32; n];
+    for i in 0..n {
+        x[i] = s.rhs32[(i, 0)];
+    }
+    faer_wasm_kernels::lu::lu_solve_in_place(f.as_ref(), &piv, &mut x);
+    (x[0] + x[n - 1]) as f64
+}
+
+#[no_mangle]
+pub extern "C" fn run_qr_factor_wk_f32() -> f64 {
+    let s = state();
+    let n = s.a32.nrows();
+    let mut f = s.a32.to_owned();
+    let mut tau = alloc::vec![0.0f32; n];
+    faer_wasm_kernels::qr::qr_factor_in_place(f.as_mut(), &mut tau);
+    (f[(0, 0)] + f[(n - 1, n - 1)] + tau[n / 2]) as f64
+}
+
+#[no_mangle]
+pub extern "C" fn run_eigvals_k3_f32() -> f64 {
+    let s = state();
+    let n = s.a32.nrows();
+    let mut h = s.a32.to_owned();
+    let mut tau = alloc::vec![0.0f32; n.saturating_sub(2).max(1)];
+    let mut work = alloc::vec![0.0f32; n];
+    faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
+    for j in 0..n {
+        for i in j + 2..n {
+            h[(i, j)] = 0.0;
+        }
+    }
+    if n < 480 {
+        let mut w_re = alloc::vec![0.0f32; n];
+        let mut w_im = alloc::vec![0.0f32; n];
+        let info =
+            faer_wasm_kernels::schur_small::hqr_eigvals_in_place(h.as_mut(), &mut w_re, &mut w_im);
+        assert!(info == 0, "eigvals_k3_f32 (hqr) did not converge");
+        (w_re[0] + w_im[n - 1]) as f64
+    } else {
+        let params: faer::linalg::evd::schur::SchurParams = Auto::<f32>::auto();
+        let mut w_re = faer::Col::<f32>::zeros(n);
+        let mut w_im = faer::Col::<f32>::zeros(n);
+        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<f32>(
+            n,
+            n,
+            false,
+            false,
+            Par::Seq,
+            params,
+        ));
+        let (info, _, _) = real_schur::multishift_qr::<f32>(
+            false,
+            h.as_mut(),
+            None,
+            w_re.as_mut(),
+            w_im.as_mut(),
+            0,
+            n,
+            Par::Seq,
+            MemStack::new(&mut mem),
+            params,
+        );
+        assert!(info == 0, "eigvals_k3_f32 (multishift) did not converge");
+        (w_re[0] + w_im[n - 1]) as f64
     }
 }
 

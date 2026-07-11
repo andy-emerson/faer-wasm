@@ -42,6 +42,12 @@ const OPS = [
 	['lu_solve_c64', 'run_lu_solve_c64', null, 'np.linalg.solve(ac, rhsc)'],
 	['qr_r_c64', 'run_qr_c64', null, "np.linalg.qr(ac, mode='r')"],
 	['schur_c64', 'run_schur_c64', null, "sla.schur(ac, output='complex')"],
+	// f32 rows (f32/c32 phase): both sides in single precision — numpy
+	// dispatches the LAPACK s-routines, faer rows ride the generic kernels.
+	['matmul_f32', 'run_matmul_f32', [], 'a32 @ b32'],
+	['lu_solve_f32', 'run_lu_solve_wk_f32', [], 'np.linalg.solve(a32, rhs32)'],
+	['qr_r_f32', 'run_qr_factor_wk_f32', [], "np.linalg.qr(a32, mode='r')"],
+	['eigvals_f32', 'run_eigvals_k3_f32', [], 'np.linalg.eigvals(a32)'],
 ];
 
 // ---- faer side (same adaptive min-of-3 protocol as gate.mjs)
@@ -106,6 +112,10 @@ def setup(n):
     ac = rng.uniform(-1, 1, (n, n)) + 1j * rng.uniform(-1, 1, (n, n))
     bc = rng.uniform(-1, 1, (n, n)) + 1j * rng.uniform(-1, 1, (n, n))
     rhsc = rng.uniform(-1, 1, (n,)) + 1j * rng.uniform(-1, 1, (n,))
+    global a32, b32, rhs32
+    a32 = a.astype(np.float32)
+    b32 = b.astype(np.float32)
+    rhs32 = rhs.astype(np.float32)
 
 def bench(f, reps=3):
     best = float("inf")

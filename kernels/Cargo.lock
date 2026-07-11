@@ -115,6 +115,7 @@ name = "faer-wasm-kernels"
 version = "0.1.0"
 dependencies = [
  "faer",
+ "faer-traits",
  "libm",
 ]
 

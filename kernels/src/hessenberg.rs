@@ -1,13 +1,17 @@
-//! Unblocked Householder Hessenberg reduction (`dgehd2`-shape) for f64 on
-//! wasm — fix-2 of the eigen plan (docs/research-eig-wasm-2026-07.md).
+//! Unblocked Householder Hessenberg reduction (`dgehd2`-shape) on wasm —
+//! fix-2 of the eigen plan (docs/research-eig-wasm-2026-07.md). Generic
+//! over [`WasmScalar`] (f64/f32) since the f32/c32 phase.
 //!
 //! faer's Hessenberg runs unblocked below n=256 and its blocked panel is
 //! gemv-bound either way; the measured GEMV runs at ~30% of STREAM
 //! bandwidth on the reference runner (3× headroom), and Hessenberg is
 //! ~36% of the repaired eigvals pipeline. This kernel is the same recipe
 //! that beat scipy 2.5–3× on QR: per reflector, stream the trailing
-//! columns exactly twice per side with flat simd128 `dot`/`axpy`, no
-//! blocking, no T-matrix.
+//! columns exactly twice per side with flat SIMD `dot`/`axpy`, no
+//! blocking, no T-matrix. (faer's *blocked* Hessenberg additionally has a
+//! machine-sensitive cache cliff at n ≥ 256 — 7–95× slower than this
+//! kernel at n=1024 depending on the runner — so this front-end is also
+//! the hazard avoidance, not just the speedup.)
 //!
 //! Per column `j` (reflector from `x = A[j+1.., j]`, `v` stored in
 //! `A[j+2.., j]` with implicit `v[0]=1`, `β` at `A[j+1, j]`, LAPACK
@@ -23,20 +27,24 @@
 
 use faer::MatMut;
 
-use crate::qr::{axpy, dot, scale};
+use crate::scalar::WasmScalar;
 
 /// Reduces square `A` (n×n, column-major, unit row stride) to upper
 /// Hessenberg form in place. On exit the Hessenberg matrix occupies the
 /// upper triangle plus the first subdiagonal; the Householder vectors sit
 /// below the first subdiagonal (`dgehrd` storage) with `tau[j]` their
 /// scalars (`k = n-2` reflectors; `tau` needs at least that). `work`
-/// needs at least `n` scratch f64s.
-pub fn hessenberg_factor_in_place(a: MatMut<'_, f64>, tau: &mut [f64], work: &mut [f64]) {
+/// needs at least `n` scratch scalars.
+pub fn hessenberg_factor_in_place<T: WasmScalar>(
+	a: MatMut<'_, T>,
+	tau: &mut [T],
+	work: &mut [T],
+) {
 	let n = a.nrows();
 	assert!(a.ncols() == n, "square input required");
 	let k = n.saturating_sub(2);
 	assert!(tau.len() >= k, "tau must hold n-2 scalars");
-	assert!(work.len() >= n, "work must hold n scratch f64s");
+	assert!(work.len() >= n, "work must hold n scratch scalars");
 	assert!(a.row_stride() == 1, "column-major with unit row stride required");
 	let cs = a.col_stride() as usize;
 	let base = a.as_ptr_mut();
@@ -48,18 +56,22 @@ pub fn hessenberg_factor_in_place(a: MatMut<'_, f64>, tau: &mut [f64], work: &mu
 			let alpha = *col.add(j + 1);
 			let tail = n - j - 2; // length of the stored v tail
 
-			let xnorm_sq = if tail > 0 { dot(col.add(j + 2), col.add(j + 2), tail) } else { 0.0 };
-			if xnorm_sq == 0.0 {
-				tau[j] = 0.0;
+			let xnorm_sq = if tail > 0 {
+				T::dot(col.add(j + 2), col.add(j + 2), tail)
+			} else {
+				T::ZERO
+			};
+			if xnorm_sq == T::ZERO {
+				tau[j] = T::ZERO;
 				continue;
 			}
 
 			// dlarfg: beta = -sign(alpha)*hypot(alpha,‖x‖); v = x/(alpha-beta)
-			let anorm = libm::sqrt(alpha * alpha + xnorm_sq);
-			let beta = if alpha >= 0.0 { -anorm } else { anorm };
+			let anorm = (alpha * alpha + xnorm_sq).sqrt();
+			let beta = if alpha >= T::ZERO { -anorm } else { anorm };
 			let tj = (beta - alpha) / beta;
-			let inv = 1.0 / (alpha - beta);
-			scale(col.add(j + 2), inv, tail);
+			let inv = T::ONE / (alpha - beta);
+			T::scale(col.add(j + 2), inv, tail);
 			tau[j] = tj;
 			*col.add(j + 1) = beta;
 
@@ -69,17 +81,17 @@ pub fn hessenberg_factor_in_place(a: MatMut<'_, f64>, tau: &mut [f64], work: &mu
 			core::ptr::copy_nonoverlapping(first, w, n);
 			for t in 0..tail {
 				let vt = *col.add(j + 2 + t);
-				if vt != 0.0 {
+				if vt != T::ZERO {
 					// w -= (-v[t]) * A[:, j+2+t]
-					axpy(w, base.add((j + 2 + t) * cs), -vt, n);
+					T::axpy(w, base.add((j + 2 + t) * cs), -vt, n);
 				}
 			}
 			// update pass: A[:, j+1] -= τ·w; A[:, j+2+t] -= (τ·v[t])·w
-			axpy(first, w, tj, n);
+			T::axpy(first, w, tj, n);
 			for t in 0..tail {
 				let vt = *col.add(j + 2 + t);
-				if vt != 0.0 {
-					axpy(base.add((j + 2 + t) * cs), w, tj * vt, n);
+				if vt != T::ZERO {
+					T::axpy(base.add((j + 2 + t) * cs), w, tj * vt, n);
 				}
 			}
 
@@ -90,12 +102,12 @@ pub fn hessenberg_factor_in_place(a: MatMut<'_, f64>, tau: &mut [f64], work: &mu
 				let ac = base.add(c * cs);
 				let mut s = *ac.add(j + 1);
 				if tail > 0 {
-					s += dot(col.add(j + 2), ac.add(j + 2), tail);
+					s += T::dot(col.add(j + 2), ac.add(j + 2), tail);
 				}
 				s *= tj;
 				*ac.add(j + 1) -= s;
 				if tail > 0 {
-					axpy(ac.add(j + 2), col.add(j + 2), s, tail);
+					T::axpy(ac.add(j + 2), col.add(j + 2), s, tail);
 				}
 				c += 1;
 			}

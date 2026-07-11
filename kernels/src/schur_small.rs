@@ -2,7 +2,7 @@
 //!
 //! Double-shift Francis QR on an upper-Hessenberg matrix (`dlahqr`-shape),
 //! **eigenvalues only** (`want_t = false`, no `Z`), ported from faer's
-//! `lahqr` (the pinned base's `real_schur.rs`) into flat f64 pointer code.
+//! `lahqr` (the pinned base's `real_schur.rs`) into flat pointer code, generic over [`WasmScalar`] (f64/f32).
 //! Same shifts, same deflation criteria, same exceptional-shift constants
 //! (0.75 / −0.4375 every 10 stalled iterations), same two-consecutive-
 //! small-subdiagonals early start — so convergence behavior matches faer's;
@@ -18,25 +18,27 @@
 
 use faer::MatMut;
 
+use crate::scalar::WasmScalar;
+
 /// eigenvalues of [[a00,a01],[a10,a11]] (faer `lahqr_eig22` / LAPACK-style
 /// scaled 2×2 solve); returns ((re1,im1),(re2,im2))
 #[inline]
-fn eig22(a00: f64, a01: f64, a10: f64, a11: f64) -> ((f64, f64), (f64, f64)) {
+fn eig22<T: WasmScalar>(a00: T, a01: T, a10: T, a11: T) -> ((T, T), (T, T)) {
 	let s = a00.abs() + a01.abs() + a10.abs() + a11.abs();
-	if s == 0.0 {
-		return ((0.0, 0.0), (0.0, 0.0));
+	if s == T::ZERO {
+		return ((T::ZERO, T::ZERO), (T::ZERO, T::ZERO));
 	}
 	let a00 = a00 / s;
 	let a01 = a01 / s;
 	let a10 = a10 / s;
 	let a11 = a11 / s;
-	let tr = (a00 + a11) * 0.5;
+	let tr = (a00 + a11) * T::from_f64(0.5);
 	let det = (a00 - tr) * (a00 - tr) + a01 * a10;
-	if det >= 0.0 {
-		let rtdisc = libm::sqrt(det);
-		((s * (tr + rtdisc), 0.0), (s * (tr - rtdisc), 0.0))
+	if det >= T::ZERO {
+		let rtdisc = det.sqrt();
+		((s * (tr + rtdisc), T::ZERO), (s * (tr - rtdisc), T::ZERO))
 	} else {
-		let rtdisc = libm::sqrt(-det);
+		let rtdisc = (-det).sqrt();
 		let re = s * tr;
 		let im = s * rtdisc;
 		((re, im), (re, -im))
@@ -47,22 +49,22 @@ fn eig22(a00: f64, a01: f64, a10: f64, a11: f64) -> ((f64, f64), (f64, f64)) {
 /// (faer `lahqr_shiftcolumn` / LAPACK `dlaqr1`), scaled for safety.
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn shiftcolumn3(
-	h00: f64,
-	h01: f64,
-	h02: f64,
-	h10: f64,
-	h11: f64,
-	h12: f64,
-	h20: f64,
-	h21: f64,
-	h22: f64,
-	s1: (f64, f64),
-	s2: (f64, f64),
-) -> (f64, f64, f64) {
+fn shiftcolumn3<T: WasmScalar>(
+	h00: T,
+	h01: T,
+	h02: T,
+	h10: T,
+	h11: T,
+	h12: T,
+	h20: T,
+	h21: T,
+	h22: T,
+	s1: (T, T),
+	s2: (T, T),
+) -> (T, T, T) {
 	let s = (h00 - s2.0).abs() + s2.1.abs() + h10.abs() + h20.abs();
-	if s == 0.0 {
-		return (0.0, 0.0, 0.0);
+	if s == T::ZERO {
+		return (T::ZERO, T::ZERO, T::ZERO);
 	}
 	let h10s = h10 / s;
 	let h20s = h20 / s;
@@ -73,10 +75,10 @@ fn shiftcolumn3(
 }
 
 #[inline]
-fn shiftcolumn2(h00: f64, h01: f64, h10: f64, h11: f64, s1: (f64, f64), s2: (f64, f64)) -> (f64, f64) {
+fn shiftcolumn2<T: WasmScalar>(h00: T, h01: T, h10: T, h11: T, s1: (T, T), s2: (T, T)) -> (T, T) {
 	let s = (h00 - s2.0).abs() + s2.1.abs() + h10.abs();
-	if s == 0.0 {
-		return (0.0, 0.0);
+	if s == T::ZERO {
+		return (T::ZERO, T::ZERO);
 	}
 	let h10s = h10 / s;
 	let v0 = h10s * h01 + (h00 - s1.0) * ((h00 - s2.0) / s) - s1.1 * (s2.1 / s);
@@ -88,22 +90,22 @@ fn shiftcolumn2(h00: f64, h01: f64, h10: f64, h11: f64, s1: (f64, f64), s2: (f64
 /// with H = I − τ·[1,v1,v2][1,v1,v2]ᵀ. Pass b2 = 0.0 for the 2-vector case
 /// (v2 comes back 0).
 #[inline]
-fn householder3(b0: f64, b1: f64, b2: f64) -> (f64, f64, f64, f64) {
+fn householder3<T: WasmScalar>(b0: T, b1: T, b2: T) -> (T, T, T, T) {
 	let xnorm_sq = b1 * b1 + b2 * b2;
-	if xnorm_sq == 0.0 {
-		return (b0, 0.0, 0.0, 0.0);
+	if xnorm_sq == T::ZERO {
+		return (b0, T::ZERO, T::ZERO, T::ZERO);
 	}
-	let anorm = libm::sqrt(b0 * b0 + xnorm_sq);
-	let beta = if b0 >= 0.0 { -anorm } else { anorm };
+	let anorm = (b0 * b0 + xnorm_sq).sqrt();
+	let beta = if b0 >= T::ZERO { -anorm } else { anorm };
 	let tau = (beta - b0) / beta;
-	let inv = 1.0 / (b0 - beta);
+	let inv = T::ONE / (b0 - beta);
 	(beta, tau, b1 * inv, b2 * inv)
 }
 
 /// Computes the eigenvalues of an upper-Hessenberg `h` in place (contents
 /// destroyed), conjugate pairs adjacent in `w_re`/`w_im`. Returns 0 on
 /// success, or (LAPACK-style) the failing index+1 on non-convergence.
-pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f64]) -> isize {
+pub fn hqr_eigvals_in_place<T: WasmScalar>(h: MatMut<'_, T>, w_re: &mut [T], w_im: &mut [T]) -> isize {
 	let n = h.nrows();
 	assert!(h.ncols() == n, "square input required");
 	assert!(w_re.len() >= n && w_im.len() >= n);
@@ -111,10 +113,10 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 	let cs = h.col_stride() as usize;
 	let p = h.as_ptr_mut();
 
-	const EPS: f64 = f64::EPSILON;
-	const SMALL_NUM: f64 = f64::MIN_POSITIVE / f64::EPSILON;
-	const DAT1: f64 = 0.75;
-	const DAT2: f64 = -0.4375;
+	let eps = T::EPS;
+	let small_num = T::SMALL_NUM;
+	let dat1 = T::from_f64(0.75);
+	let dat2 = T::from_f64(-0.4375);
 	const NON_CONVERGENCE_LIMIT: usize = 10;
 
 	if n == 0 {
@@ -124,7 +126,7 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 		unsafe {
 			w_re[0] = *p;
 		}
-		w_im[0] = 0.0;
+		w_im[0] = T::ZERO;
 		return 0;
 	}
 
@@ -148,7 +150,7 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 			if istart + 1 >= istop {
 				if istart + 1 == istop {
 					w_re[istart] = at!(istart, istart);
-					w_im[istart] = 0.0;
+					w_im[istart] = T::ZERO;
 				}
 				break;
 			}
@@ -156,13 +158,13 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 			// deflation scan: find a negligible subdiagonal to split at
 			for i in (istart + 1..istop).rev() {
 				let sub = at!(i, i - 1);
-				if sub.abs() < SMALL_NUM {
-					at!(i, i - 1) = 0.0;
+				if sub.abs() < small_num {
+					at!(i, i - 1) = T::ZERO;
 					istart = i;
 					break;
 				}
 				let mut tst = at!(i - 1, i - 1).abs() + at!(i, i).abs();
-				if tst == 0.0 {
+				if tst == T::ZERO {
 					if i >= 2 {
 						tst += at!(i - 1, i - 2).abs();
 					}
@@ -170,17 +172,17 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 						tst += at!(i + 1, i).abs();
 					}
 				}
-				if sub.abs() <= EPS * tst {
+				if sub.abs() <= eps * tst {
 					// Ahues–Tisseur small-subdiagonal test
 					let sup = at!(i - 1, i);
-					let ab = sub.abs().max(sup.abs());
-					let ba = sub.abs().min(sup.abs());
+					let ab = sub.abs().maxs(sup.abs());
+					let ba = sub.abs().mins(sup.abs());
 					let d = at!(i, i) - at!(i - 1, i - 1);
-					let aa = at!(i, i).abs().max(d.abs());
-					let bb = at!(i, i).abs().min(d.abs());
+					let aa = at!(i, i).abs().maxs(d.abs());
+					let bb = at!(i, i).abs().mins(d.abs());
 					let s = aa + ab;
-					if ba * (ab / s) <= (EPS * (bb * (aa / s))).max(SMALL_NUM) {
-						at!(i, i - 1) = 0.0;
+					if ba * (ab / s) <= (eps * (bb * (aa / s))).maxs(small_num) {
+						at!(i, i - 1) = T::ZERO;
 						istart = i;
 						break;
 					}
@@ -192,7 +194,7 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 				if istart + 1 == istop {
 					k_defl = 0;
 					w_re[istart] = at!(istart, istart);
-					w_im[istart] = 0.0;
+					w_im[istart] = T::ZERO;
 					istop = istart;
 					istart = 0;
 					continue;
@@ -224,8 +226,8 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 				if istop > 2 {
 					s += at!(istop - 2, istop - 3).abs();
 				}
-				a00 = DAT1 * s + at!(istop - 1, istop - 1);
-				a01 = DAT2 * s;
+				a00 = dat1 * s + at!(istop - 1, istop - 1);
+				a01 = dat2 * s;
 				a10 = s;
 				a11 = a00;
 			} else {
@@ -235,7 +237,7 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 				a11 = at!(istop - 1, istop - 1);
 			}
 			let (mut s1, mut s2) = eig22(a00, a01, a10, a11);
-			if s1.1 == 0.0 && s2.1 == 0.0 {
+			if s1.1 == T::ZERO && s2.1 == T::ZERO {
 				// prefer the shift closer to the trailing entry, doubled
 				let t = at!(istop - 1, istop - 1);
 				if (s1.0 - t).abs() <= (s2.0 - t).abs() {
@@ -265,7 +267,7 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 					let (_, tau, w1, w2) = householder3(v0, v1, v2);
 					let refsum = tau * at!(i, i - 1) + w1 * at!(i + 1, i - 1);
 					if (at!(i + 1, i - 1) - refsum * w1).abs() + (refsum * w2).abs()
-						<= EPS
+						<= eps
 							* (at!(i, i - 1).abs()
 								+ at!(i, i + 1).abs() + at!(i + 1, i + 2).abs())
 					{
@@ -303,27 +305,27 @@ pub fn hqr_eigvals_in_place(h: MatMut<'_, f64>, w_re: &mut [f64], w_im: &mut [f6
 							s1,
 							s2,
 						);
-						(b0, b1, 0.0)
+						(b0, b1, T::ZERO)
 					};
 					let (_, t, w1, w2) = householder3(b0, b1, b2);
 					tau = t;
 					v1 = w1;
 					v2 = w2;
 					if i > istart {
-						at!(i, i - 1) *= 1.0 - tau;
+						at!(i, i - 1) *= T::ONE - tau;
 					}
 				} else {
 					let b0 = at!(i, i - 1);
 					let b1 = at!(i + 1, i - 1);
-					let b2 = if nr == 3 { at!(i + 2, i - 1) } else { 0.0 };
+					let b2 = if nr == 3 { at!(i + 2, i - 1) } else { T::ZERO };
 					let (beta, t, w1, w2) = householder3(b0, b1, b2);
 					tau = t;
 					v1 = w1;
 					v2 = w2;
 					at!(i, i - 1) = beta;
-					at!(i + 1, i - 1) = 0.0;
+					at!(i + 1, i - 1) = T::ZERO;
 					if nr == 3 {
-						at!(i + 2, i - 1) = 0.0;
+						at!(i + 2, i - 1) = T::ZERO;
 					}
 				}
 				let t2 = tau * v1;
