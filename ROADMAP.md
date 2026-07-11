@@ -316,9 +316,21 @@ then one global replication-graded tuning pass.
    LAPACK-grade 1.50–1.61×). Next levers recorded in the research doc:
    hand hqr+Z past 480 (re-tune debt, frozen), wasm-shaped multishift
    Z-accumulation, or a 0004-class profile of faer's want_t/Z internals.
-   (e) Decision point, open: c64 kernel twins (a NEW build — no complex
-   hand kernels exist at either precision; zlahqr is single-shift 2×1,
-   c64 Schur currently 0.4–0.9× across sizes).
+   (e) ✅ c64 kernel twins built same day (architect go): complex
+   Hessenberg + backward-accumulated Q + Givens-based single-shift chqr
+   (want_t/Z), flat scalar complex loops. Replication verdicts vs scipy
+   complex Schur (run 29157035070): **WIN 1.38×/1.34× at 64/128, LOSS
+   0.90× at 256, WIN 1.10×/1.03× at 512/1024** — from the 0.4–0.9×
+   baseline. The 256 loss is located: our rotation applies are scalar
+   while faer's lahqr applies ride pulp SIMD — next lever is a simd128
+   complex-rotation primitive (one c64 per lane, the refl3 twin).
+   Fallout finding: faer's c64 matmul allocates per-call temps via
+   GlobalAlloc (15.4 GB cumulative in one n=600 multishift) — OOM'd the
+   leak-only bump allocator at n≥590, fixed by LIFO-rewind in both wasm
+   shims (docs/wasm.md §2), regression-guarded, upstream-ledgered.
+   Caveat now on record for real Schur too: 512/1024 verdicts are
+   machine-dependent (0.66×→1.10× across runner classes for the same
+   binary); 64–256 wins replicate on both machine classes.
 2. **Eigenvectors (nonsymmetric `eig`)** — needs Schur first:
    `trevc`-shaped back-substitution on T + back-transform through Z, both
    kernel-shaped; scoreboard row vs `np.linalg.eig`.

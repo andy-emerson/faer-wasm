@@ -261,6 +261,60 @@ Below the crossover the flat want_t/Z applies already deliver
 LAPACK-grade deltas (1.50–1.61×) against reference dlahqr-class costs —
 and the wins.
 
+## The c64 twins — decision point (e), built + verdicts (2026-07-11)
+
+Built same day on the architect's go (commits `d6a6636`/`6880b5a`):
+`kernels/hessenberg_cplx` (zgehd2-shape reduction + zunghr-shape backward
+Q), `kernels/schur_small_cplx` (`chqr_schur_in_place` — faer's
+Givens-based single-shift complex lahqr shape with want_t/Z, `rotg`
+ported verbatim except LAPACK `r = a` semantics on `b == 0`), flat
+*scalar* complex loops per the Jacobi-probe discipline (bare-correct
+first, simd where measurement says). Correctness gates all green
+(`kernels/tests/schur_cplx.rs`: ‖A−ZTZᴴ‖, unitarity, exact triangular T,
+eigenvalues vs faer, diag(T)=w).
+
+**Replication verdicts vs `scipy.linalg.schur(ac, output='complex')`**
+(run 29157035070, 5 alternating rounds, ranges separated at every size):
+
+| n | scipy med [range] | schur_c64_k med [range] | verdict |
+| - | - | - | - |
+| 64 | 5.42 [5.42..5.44] | 3.92 [3.91..3.94] | **WIN 1.38×** |
+| 128 | 36.71 [36.66..36.76] | 27.48 [27.08..27.64] | **WIN 1.34×** |
+| 256 | 277.9 [277.7..278.3] | 310.0 [298.5..324.2] | **LOSS 0.90×** |
+| 512 | 1674.7 [1673.3..1676.7] | 1528.9 [1528.4..1534.2] | **WIN 1.10×** |
+| 1024 | 9923.7 [9916..9946] | 9672.5 [9670..9706] | **WIN 1.03×** |
+
+The c64 arc: 0.4–0.9× baseline → wins at 4 of 5 sizes. The one loss has
+a located mechanism: at 256 the pipeline is our `chqr`, whose rotation
+applies are scalar, while faer's own complex lahqr (the `schur_c64`
+baseline row: 253.7 ms vs our 310.3 at 256 on this machine) applies
+rotations through pulp's SIMD — **the identified next lever is a
+simd128 complex-rotation primitive** (one c64 per 128-bit lane, the
+c64 twin of `refl3`/`refl2`), which should flip 256 and widen 64–128.
+At 512+ both routes ride faer's complex multishift and our Hessenberg
+front-end wins the difference.
+
+**Runner heterogeneity caveat (real Schur too).** This run landed on a
+faster machine class (suite geomean 1.70× vs 0.93× on run 29155804619
+hours earlier). The real `schur_k` verdicts at the top sizes are
+machine-dependent: n=512 = LOSS 0.66× (machine A, twice) but **WIN
+1.10×** (machine B); n=1024 = LOSS 0.70× (A) vs 0.99× overlap-grade
+loss (B). faer's multishift moves 1.8× across machines where scipy
+moves ~1.1× — the same machine-sensitivity family as the
+blocked-Hessenberg cliff. The 64–256 wins replicate on BOTH machines
+(1.24–1.75×). Honest scoreboard: real Schur wins ≤256 everywhere,
+512/1024 range from 0.66× to 1.10× by machine.
+
+**The n=1024 crash that run A exposed** (and run B, post-fix, survived):
+faer's c64 matmul allocates per-call temporaries via GlobalAlloc — one
+c64 multishift at n=600 measured at **15.4 GB cumulative / ~25K
+allocations, peak live ~19 MB** (counting-allocator probe,
+`kernels/tests/alloc_probe.rs`). Fatal on the leak-only bump allocator
+the zero-import pattern used; fixed by a 3-line LIFO-rewind in `dealloc`
+(+3,734 MB → +7 MB per call at n=600), documented in docs/wasm.md §2,
+guarded by the alloc_probe peak-live assertion, ledgered upstream (also
+a no_std perf hazard: 25K allocations per solve).
+
 ## Sources
 
 Reference-LAPACK master via GitHub raw (dlaqr0/dlaqr5/zlaqr0/zlaqr5/

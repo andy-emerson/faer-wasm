@@ -131,6 +131,10 @@ their evidence.
 | schur_k vs scipy.linalg.schur: WIN 1.31×/1.75× at n=64/128 (ranges separate), overlap at 256, loss 0.66×/0.70× at 512/1024; vs the prior faer-schur baseline 7.5×/3.1×/3.0×/1.4× faster at 64–512 | observed | scripted | replication gate in `pyodide-vs-faer.mjs`, run 29146566266 |
 | the eigvals→Schur cost delta on wasm: Z dominates (25–42%), T-widening ~10%; our delta is LAPACK-grade below the crossover (1.50–1.61×) but 1.90–2.05× on faer's multishift path vs scipy's 1.06–1.30× — the 512/1024 losses live there | observed | scripted | `run_schur_k_mode` split, same run; docs/research-schur-wasm-2026-07.md |
 | the eigvals→Schur delta mechanism (want_t = pure range-widening + Z updates; LAPACK holds it to ~1.26× via accumulated-U gemms with inner dim 2·NS; opponent runs verbatim reference-netlib for the whole Schur path) | proven | cross-checked | 21/25 claims 3-vote vs Reference-LAPACK/OpenBLAS source, wf_a18f11c8-af8 |
+| c64 Schur kernel pipeline (complex Hessenberg + backward-accumulated Q + single-shift chqr want_t/Z) correct: ‖A−ZTZᴴ‖, unitarity, exact triangular T, eigenvalues match faer, n=1–256 | tested | CI-enforced | `kernels/tests/schur_cplx.rs`, per push |
+| schur_c64_k vs scipy complex Schur: WIN 1.38×/1.34×/1.10×/1.03× at n=64/128/512/1024, loss 0.90× at 256 (ranges separate at all five; scalar rotation applies are the located 256 lever) | observed | scripted | replication gate, run 29157035070 |
+| real Schur 512/1024 verdicts are machine-dependent (0.66× to 1.10× for the same binary across runner classes; 64–256 wins replicate on both); faer's multishift moves 1.8× across machines where scipy moves ~1.1× | observed | scripted | runs 29146566266 / 29155804619 / 29157035070 |
+| faer's c64 matmul allocates per-call temporaries via GlobalAlloc (one n=600 c64 multishift: 15.4 GB cumulative, ~25K allocations, peak live ~19 MB) — fatal on leak-only bump allocators; LIFO-rewind shim fixes it (probe values bit-identical) | tested | CI-enforced | `kernels/tests/alloc_probe.rs` peak-live guard + wasm gate on the new shims |
 
 ## Quick start
 

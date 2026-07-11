@@ -7,9 +7,12 @@
 > kernel pipeline wins at n=64/128/256/1024 with parity at 512, an f32
 > column at 2–9× (scipy's s-routines are no faster than its d-routines
 > on wasm), SVD 0.5–0.8× (proven near its wasm ceiling), real Schur via
-> the schur_k kernel pipeline winning 1.31×/1.75× at n=64/128 with
-> parity at 256 and 0.66×/0.70× at 512/1024 (was 0.2–0.6× everywhere;
-> run 29146566266), c64 Schur 0.4–0.9× (kernel twins undecided). See
+> the schur_k kernel pipeline winning 1.24–1.75× at n=64–256 on both
+> measured machine classes, with 512/1024 machine-dependent (0.66× on
+> one runner class, 1.10×/0.99× on another — was 0.2–0.6× everywhere),
+> c64 Schur via the kernel twins winning 1.38×/1.34×/1.10×/1.03× at
+> n=64/128/512/1024 with 0.90× at 256 (was 0.4–0.9×; runs
+> 29146566266/29157035070). See
 > `research-eig-wasm-2026-07.md`, `research-svd-wasm-2026-07.md`, and
 > `research-schur-wasm-2026-07.md` for the current tables and verdicts.
 
