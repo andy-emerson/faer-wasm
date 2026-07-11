@@ -290,6 +290,41 @@ Same run re-validated the 480 crossover on a third machine (lahqr
 through 448, multishift from 512, all three pipelines; c64@512 is
 borderline at 1.04× lahqr — acceptable within the threshold's margin).
 
+## Fix-3 + the full 1+2+3 benchmark: eigvals sweeps scipy at every size
+
+Fix 3 = `kernels/src/schur_small.rs`: hand double-shift Francis QR
+(`dlahqr`-shape, eigenvalues-only), ported from faer's `lahqr` with
+identical shifts/deflation/exceptional-shift behavior, inner reflector
+loops as raw column-major pointer code, and the 2×2 standardization
+(`schur22`/`lasy2`) deleted (a deflated block is never re-read in
+eigenvalues-only mode). Correctness-gated against faer's eigenvalues at
+n=1..256 + conjugate-pair adjacency + trace invariant. The profiling that
+picked this build: the multishift sweep's tiny-gemm throughput (6–21% of
+peak at n=128 shapes, `run_sweep_gemm`) ruled the multishift path out
+below the crossover, leaving the scalar iteration as the thing to beat.
+
+`eigvals_k3` = kernel Hessenberg (fix 2) + hqr kernel below the measured
+480 crossover (fix 1) + repaired multishift above (patch 0004).
+**Replication-gated verdicts (run 29137919745, 5 alternating rounds,
+WIN only when min..max ranges separate):**
+
+| n | scipy med [range] | eigvals_k3 med [range] | verdict |
+| - | - | - | - |
+| 64 | 1.64 [1.63..1.65] | 0.93 [0.92..0.97] | **WIN 1.75×** |
+| 128 | 11.18 [11.14..11.40] | 5.38 [5.30..5.39] | **WIN 2.08×** |
+| 256 | 85.41 [85.37..85.75] | 52.70 [51.98..54.09] | **WIN 1.62×** |
+| 512 | 593.7 [593.7..603.3] | 570.1 [555.4..585.2] | **WIN 1.04×** |
+| 1024 | 3154.9 [3149.2..3161.7] | 2553.7 [2535.2..2587.8] | **WIN 1.24×** |
+
+The eigen flank is swept: from 0.1–0.4× (the worst suite ratio, later
+explained by the no_std AED-window bug + native-tuned routing + scalar
+iteration overhead) to **replicated wins at all five sizes**, 1.6–2.1× in
+the small-n regime that dominated the losses. The 512 win is the thin
+one (1.04×, ranges separate by 8 ms); its lever is the multishift sweep
+gemm shaping (documented above), unpursued for now. The wk diagnostic row
+at 1024 again showed faer's blocked-Hessenberg machine cliff (64 s on
+this runner instance) — shipping paths avoid it.
+
 ## Status / next
 
 - [x] Patch 0004 minted, round-trip verified (`git apply` clean on
