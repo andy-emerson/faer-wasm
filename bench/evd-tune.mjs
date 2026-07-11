@@ -36,6 +36,25 @@ async function time(exportName, n, args = []) {
 	return best / 1e6; // ms
 }
 
+// ---- n=1024 anomaly probe (2026-07-11): in pyodide run 29136128363 the
+// wk pipeline (faer blocked Hessenberg -> multishift) took 52s/call on the
+// runner vs 4.1s on the dev box for the SAME deterministic binary, while
+// hk (kernel Hessenberg -> same multishift) stayed at 2.26s in the same
+// alternating rounds. Split the phases on the runner to locate the cliff.
+const PROBE = [
+	['hess faer (run_hess_only)', 'run_hess_only', []],
+	['hess kernel (run_hess_wk)', 'run_hess_wk', []],
+	['eigvals wk (faer hess)', 'run_eigvals_wk', []],
+	['eigvals hk (kernel hess)', 'run_eigvals_hk', []],
+];
+for (const n of [512, 1024]) {
+	console.log(`\n## anomaly probe n=${n}`);
+	for (const [label, exp, args] of PROBE) {
+		const ms = await time(exp, n, args);
+		console.log(`  ${label.padEnd(28)} ${ms.toFixed(1)} ms`);
+	}
+}
+
 const LAHQR = 1 << 30; // blocking above any n => always the scalar kernel
 // [pipeline label, export, extra fixed args]
 const PIPELINES = [
