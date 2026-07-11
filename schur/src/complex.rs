@@ -16,20 +16,21 @@ use faer::{Auto, Conj};
 
 pub use faer::linalg::evd::schur::SchurParams;
 
-/// `SchurParams` tuned for the compilation target. On `wasm32` the blocked
-/// multishift/AED path loses to the unblocked `lahqr` kernel by 2–13×
-/// through n = 384 (real) / n = 256 (complex) — measured 2026-07-09 under
-/// node/V8, tables in `docs/benchmarks-2026-07.md` — so the blocking
-/// threshold is raised to keep every size on `lahqr`. Re-sweep before
-/// relying on this beyond the measured range; the `*_in_place` APIs take
-/// explicit params for consumers who want the blocked path back. On other
-/// targets this is faer's `Auto` default, unchanged.
+/// `SchurParams` tuned for the compilation target. The 2026-07-09 "blocked
+/// multishift/AED loses to `lahqr` by 2–13× on wasm" measurement (which
+/// pinned this to `usize::MAX`) was the no_std AED-window bug for n ≥ 150,
+/// fixed by carried `patches/faer-rs/0004`; post-fix the crossover grid
+/// (run 29134291933) has `lahqr` winning through n = 448 (11.8× at 96 down
+/// to 1.16× at 448) and multishift winning from n = 512 (1.07×) — the same
+/// crossover as the real pipeline. 480 routes every measured winner
+/// correctly; re-sweep (`bench/evd-tune.mjs`) before relying on it beyond
+/// n = 512. On other targets this is faer's `Auto` default, unchanged.
 pub fn recommended_params() -> SchurParams {
 	#[allow(unused_mut)]
 	let mut params: SchurParams = Auto::<c64>::auto();
 	#[cfg(target_arch = "wasm32")]
 	{
-		params.blocking_threshold = usize::MAX;
+		params.blocking_threshold = 480;
 	}
 	params
 }
