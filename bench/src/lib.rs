@@ -475,6 +475,60 @@ pub extern "C" fn run_eigvals_wk() -> f64 {
     w_re[0] + w_im[n - 1]
 }
 
+// Fix-2 probes: the flat-simd128 Hessenberg kernel alone (vs run_hess_only,
+// faer's reduction), and the full eigvals pipeline with the kernel front-end
+// (kernel Hessenberg -> faer multishift QR at the measured 480 threshold).
+#[no_mangle]
+pub extern "C" fn run_hess_wk() -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    let mut h = s.a.to_owned();
+    let mut tau = alloc::vec![0.0f64; n.saturating_sub(2).max(1)];
+    let mut work = alloc::vec![0.0f64; n];
+    faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
+    h[(0, 0)] + h[(n - 1, n - 2)]
+}
+
+#[no_mangle]
+pub extern "C" fn run_eigvals_hk() -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    let params = faer_schur::real::recommended_eigenvalues_params();
+    let mut h = s.a.to_owned();
+    let mut tau = alloc::vec![0.0f64; n.saturating_sub(2).max(1)];
+    let mut work = alloc::vec![0.0f64; n];
+    faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
+    for j in 0..n {
+        for i in j + 2..n {
+            h[(i, j)] = 0.0;
+        }
+    }
+    let mut w_re = faer::Col::<f64>::zeros(n);
+    let mut w_im = faer::Col::<f64>::zeros(n);
+    let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<f64>(
+        n,
+        n,
+        false,
+        false,
+        Par::Seq,
+        params,
+    ));
+    let (info, _, _) = real_schur::multishift_qr::<f64>(
+        false,
+        h.as_mut(),
+        None,
+        w_re.as_mut(),
+        w_im.as_mut(),
+        0,
+        n,
+        Par::Seq,
+        MemStack::new(&mut mem),
+        params,
+    );
+    assert!(info == 0, "eigvals_hk did not converge");
+    w_re[0] + w_im[n - 1]
+}
+
 // Iteration-count probe: AED calls and multishift sweeps for one solve,
 // packed as aed*100000 + sweeps. Distinguishes "faer converges slower"
 // (count explosion) from "each sweep is slower" (counts match LAPACK's

@@ -22,7 +22,7 @@ use faer::MatMut;
 /// `dst[i] -= src[i] * alpha`, simd128 on wasm (2 lanes, 2× unrolled;
 /// `v128_load`/`store` are alignment-free by spec), scalar elsewhere.
 #[inline(always)]
-unsafe fn axpy(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
+pub(crate) unsafe fn axpy(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
 	#[cfg(target_arch = "wasm32")]
 	{
 		axpy_simd128(dst, src, alpha, len);
@@ -37,7 +37,7 @@ unsafe fn axpy(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
 
 /// `sum_i a[i]*b[i]` — the reflector's `vᵀ·c` (and `‖x‖²` when `a == b`).
 #[inline(always)]
-unsafe fn dot(a: *const f64, b: *const f64, len: usize) -> f64 {
+pub(crate) unsafe fn dot(a: *const f64, b: *const f64, len: usize) -> f64 {
 	#[cfg(target_arch = "wasm32")]
 	{
 		dot_simd128(a, b, len)
@@ -54,7 +54,7 @@ unsafe fn dot(a: *const f64, b: *const f64, len: usize) -> f64 {
 
 /// `dst[i] *= alpha` — scales the reflector tail into `v`.
 #[inline(always)]
-unsafe fn scale(dst: *mut f64, alpha: f64, len: usize) {
+pub(crate) unsafe fn scale(dst: *mut f64, alpha: f64, len: usize) {
 	#[cfg(target_arch = "wasm32")]
 	{
 		scale_simd128(dst, alpha, len);

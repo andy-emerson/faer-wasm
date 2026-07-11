@@ -18,6 +18,7 @@
 #![no_std]
 extern crate alloc;
 
+pub mod hessenberg;
 pub mod lu;
 pub mod qr;
 pub mod svd;
