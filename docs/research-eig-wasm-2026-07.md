@@ -209,6 +209,33 @@ claims refuted 0-3 including an over-precise iparmq ladder and an IACC22
 assertion (LAPACK ≥3.10 changed how IACC22 is honored inside dlaqr5 —
 re-verify before leaning on it).
 
+## Fix-1 + fix-2 benchmark (pyodide run 29135023343) — first eigvals WINS
+
+The architect's incremental plan (build 1 → bench → 1+2 → bench → 1+2+3 →
+bench). Fix 1 = per-n lahqr/multishift routing at the measured crossover
+480 (`recommended_params(n)`; first attempt pinned 480 *inside* the params
+and was caught by the benchmark — `blocking_threshold` doubles as `nmin`
+inside `multishift_qr`, poisoning n=512 by 13%; routing now lives outside).
+Fix 2 = the flat-simd128 Hessenberg kernel (`kernels/src/hessenberg.rs`,
+dgehd2-shape, gaxpy right-apply + dot/axpy left-apply, correctness-gated
+on similarity/orthogonality/eigenvalue-preservation).
+
+| n | faer default | +fix1 (`eigvals_wk`) | +fix1+2 (`eigvals_hk`) | scipy | hk vs scipy |
+| - | -: | -: | -: | -: | - |
+| 64 | 3.22 ms | 3.20 ms | 3.13 ms | 1.63 ms | 0.5× |
+| 128 | 111.3 ms | 16.3 ms | 14.3 ms | 11.1 ms | 0.8× |
+| 256 | 181.3 ms | 135.7 ms | **75.1 ms** | 85.3 ms | **1.14× WIN** |
+| 512 | 853.9 ms | 854.3 ms | **568.9 ms** | 591.7 ms | **1.04× win** |
+
+eigvals arc: 0.1–0.4× (start) → 0.7× (patch 0004) → **0.8–1.14×**
+(fixes 1+2). The kernel Hessenberg measured ~2.6× faer's reduction in the
+pipeline delta (wk−hk = 60.6 ms at n=256 vs faer-hess 47.7). Remaining
+gap is all small-n QR iteration: at n=64 scipy's entire dgeev (1.6 ms) is
+2× faster than our lahqr phase alone; at 128 lahqr ≈ 11 ms of our 14.3 vs
+scipy's 11.1 total. That is fix-3 territory: make the iteration itself
+competitive at small n (faer's multishift sweep is ~8× off LAPACK's
+per-sweep at 128, and lahqr's Givens application is scalar).
+
 ## Status / next
 
 - [x] Patch 0004 minted, round-trip verified (`git apply` clean on
