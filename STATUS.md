@@ -5,7 +5,7 @@ what do we ship, and how good is it?** Updated at the end of every
 working session. Details and evidence live in `docs/` and the README
 evidence grid; this page is the summary you can hold in your head.
 
-Last updated: 2026-07-11.
+Last updated: 2026-07-12.
 
 ## 1. What we changed in faer itself
 
@@ -44,7 +44,7 @@ running in the browser engine. Numbers >1 mean we're faster.
 | operation | works? | tested? | benchmarked? | vs scipy |
 | - | - | - | - | - |
 | multiply, LU, QR, eigenvalues | ✓ same kernels as f64 | ✓ | ✓ | 2–9× faster |
-| Schur | ✓ same kernel as f64 | ✓ | **✗ — gap** | not measured |
+| Schur | ✓ same kernel as f64 | ✓ | ✓ | 1.7–2.5× faster to n=256, 1.1× at 512 |
 
 ### Double precision, complex (c64)
 
@@ -61,16 +61,21 @@ scoped job — queued behind the packaging decision.
 
 ## 3. Known gaps and next levers (for the architect to pick from)
 
-- **f32 Schur benchmark row** — the code works and is tested; adding the
-  benchmark is ~30 minutes.
-- **complex Schur at n=256** — loses 10% because our rotation loop isn't
-  SIMD yet; the fix is known and contained.
+- **complex Schur at n=256** — still behind scipy there. We built the
+  SIMD rotation fix for it; same-machine measurement of the fix is in
+  flight (see §benchmark honesty below).
 - **real Schur at n=1024** — a tie, not a win; the remaining cost is in
   faer's large-size path, levers documented in the research doc.
-- **re-check old numbers** — today we found our old benchmark setup was
-  unfairly slowing OUR side of every large-size comparison (an allocator
-  problem, now fixed). Numbers published before today understate us;
-  they're flagged, not yet all re-measured.
+- **re-check old numbers** — on 2026-07-11 we found our old benchmark
+  setup was unfairly slowing OUR side of every large-size comparison (an
+  allocator problem, now fixed). Numbers published before then understate
+  us; they're flagged, not yet all re-measured.
+- **benchmark honesty (2026-07-12)** — CI hands us a different machine
+  each run, and identical code drifted 7–15% between two runs. So a
+  number from one run can't be compared with a number from another; only
+  comparisons made back-to-back inside a single run count. Our
+  scipy-vs-us verdicts already work that way; judging our own code
+  changes now does too (`bench/ab-crot.mjs`).
 
 ## The consistency rule (adopted 2026-07-11)
 
