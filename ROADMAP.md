@@ -262,9 +262,9 @@ to one global, replication-graded tuning pass at the end.
       over `WasmScalar` (f64x2/f32x4), f64 bit-unchanged, f32 gates green;
       runner f32 column vs scipy float32: matmul 4.3–9.1× (n≥128),
       LU-solve 2.4–3.0×, QR 3.7–5.1×, eigvals 2.0–4.3× — scipy's
-      s-routines measure no faster than its d-routines on wasm. c32/c64
-      hand kernels remain future work (no complex kernels at either
-      precision yet).
+      s-routines measure no faster than its d-routines on wasm. c32 hand
+      kernels remain future work; c64 kernels landed in the later Schur
+      and eigenvector campaigns (Phase 2 items 1(e) and 2).
 - [ ] LU residual at n≥256 (0.8–0.9× vs scipy): next levers per the
       research plan are relaxed-FMA base kernels and packing the panel
       columns; diminishing returns vs the eigen flank.

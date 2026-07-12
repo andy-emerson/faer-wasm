@@ -7,7 +7,7 @@
 > kernel pipeline wins at ALL five sizes n=64–1024 (1.51–2.08×; the
 > old 512-parity verdict was leak-allocator tax, see below), an f32
 > column at 2–9× (scipy's s-routines are no faster than its d-routines
-> on wasm), SVD 0.9–1.5× post-fix, real Schur via the schur_k kernel
+> on wasm), SVD 0.7–1.5× post-fix, real Schur via the schur_k kernel
 > pipeline winning 1.08–1.67× at n=64–512 with 0.99× at 1024 (was
 > 0.2–0.6× everywhere), c64 Schur via the kernel twins winning
 > 1.38×/1.34×/1.10×/1.03× at n=64/128/512/1024 with 0.90× at 256 (was

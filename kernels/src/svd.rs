@@ -1,21 +1,15 @@
-//! One-sided Jacobi SVD (cyclic, **unpreconditioned**) for f64 on wasm — a
-//! **Status: measured and KILLED 2026-07-10** — 12–15 sweeps at n≤512 =
-//! 0.1–0.2× scipy on the runner (docs/research-svd-wasm-2026-07.md). Kept
-//! as the evidence artifact behind that verdict; not a shipping path.
-//! PROBE to decide whether the full preconditioned build is worth it
-//! (docs/research-svd-wasm-2026-07.md). The runner roofline showed faer's
-//! bidiag→DC pipeline spends ~70% of its time on the DC-solve + vector
-//! back-transformation, both of which exist *only because* it bidiagonalizes.
-//! One-sided Jacobi has neither phase: it rotates pairs of columns of A until
-//! they are orthogonal, and then U, Σ, V fall straight out. The core op is
-//! column dot-products + plane rotations — level-1 BLAS over contiguous
-//! columns, the simd128-native shape.
+//! One-sided Jacobi SVD (cyclic, unpreconditioned) for f64 on wasm.
 //!
-//! This is intentionally the bare, unpreconditioned algorithm: its job is to
-//! measure sweeps-to-convergence and the rotation-kernel rate, not to be the
-//! final kernel. Plain flat loops (LLVM autovectorizes these column dot/axpy
-//! shapes at opt-level 3); an explicit simd128 pass and the RRQR
-//! preconditioner come only if the sweep count justifies the build.
+//! **Status: measured and KILLED 2026-07-10; retained as the evidence
+//! artifact, not a shipping path.** This was the probe built to decide
+//! whether a preconditioned Jacobi SVD could beat faer's bidiag→DC
+//! pipeline on wasm (the roofline said ~70% of faer's SVD time exists
+//! only because it bidiagonalizes, and Jacobi's column dot/rotation core
+//! is the simd128-native shape). Measurement answered no: 12–15 sweeps
+//! to converge at n≤512 ≈ 8× the flops = 0.1–0.2× scipy on the runner
+//! (docs/research-svd-wasm-2026-07.md). The kernel and its correctness
+//! test stay so the refutation remains reproducible (2026-07-12 sweep
+//! decision); its bench exports were dropped in that sweep.
 
 use faer::MatMut;
 

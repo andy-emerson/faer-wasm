@@ -9,6 +9,13 @@
 //! hazard returns silently and this fails first.
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::Mutex;
+
+// The counters below are process-global, so the two tests MUST NOT run
+// concurrently or their measurement windows pollute each other (found in
+// the 2026-07-12 sweep: deltas swung 5 MB ↔ 300 MB with the harness's
+// default parallel test threads). Each test holds this for its duration.
+static SERIAL: Mutex<()> = Mutex::new(());
 
 static TOTAL: AtomicUsize = AtomicUsize::new(0);
 static COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -36,6 +43,7 @@ static A: Counting = Counting;
 
 #[test]
 fn count_complex_multishift_allocs() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     use faer::linalg::evd::schur::{self, complex_schur};
     use faer::dyn_stack::{MemBuffer, MemStack};
     use faer::{c64, Auto, Mat, Par};
@@ -85,6 +93,7 @@ fn count_complex_multishift_allocs() {
 
 #[test]
 fn count_f64_multishift_and_c64_matmul() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     use faer::linalg::evd::schur::{self, real_schur};
     use faer::linalg::matmul::matmul;
     use faer::dyn_stack::{MemBuffer, MemStack};
@@ -117,10 +126,18 @@ fn count_f64_multishift_and_c64_matmul() {
     );
     let t1 = (TOTAL.load(Ordering::Relaxed), COUNT.load(Ordering::Relaxed));
     assert!(info == 0);
+    let f64_mb = (t1.0 - t0.0) as f64 / 1048576.0;
     println!(
-        "f64 multishift n=600: {:.1} MB across {} allocations",
-        (t1.0 - t0.0) as f64 / 1048576.0,
+        "f64 multishift n=600: {f64_mb:.1} MB across {} allocations",
         t1.1 - t0.1
+    );
+    // regression guard (2026-07-12 sweep — this test previously only
+    // printed, and the two tests raced on the global counters): measured
+    // 5.2 MB / 903 allocations serialized; the c64 pathology class it
+    // must catch was 15,400 MB. 64 MB splits them with 12× headroom.
+    assert!(
+        f64_mb < 64.0,
+        "f64 multishift cumulative allocation grew to {f64_mb:.1} MB"
     );
 
     // one c64 matmul at a sweep-ish shape
@@ -130,9 +147,15 @@ fn count_f64_multishift_and_c64_matmul() {
     let t0 = (TOTAL.load(Ordering::Relaxed), COUNT.load(Ordering::Relaxed));
     matmul(cc.as_mut(), Accum::Replace, ac.as_ref(), bc.as_ref(), c64::new(1.0, 0.0), Par::Seq);
     let t1 = (TOTAL.load(Ordering::Relaxed), COUNT.load(Ordering::Relaxed));
+    let c64_mb = (t1.0 - t0.0) as f64 / 1048576.0;
     println!(
-        "one c64 matmul (96x96)x(96x504): {:.3} MB across {} allocations",
-        (t1.0 - t0.0) as f64 / 1048576.0,
+        "one c64 matmul (96x96)x(96x504): {c64_mb:.3} MB across {} allocations",
         t1.1 - t0.1
+    );
+    // measured 0.023 MB / 2 allocations serialized; the LIFO-rewind shims
+    // absorb per-call temps only while they stay bounded per call
+    assert!(
+        c64_mb < 16.0,
+        "c64 matmul per-call allocation grew to {c64_mb:.3} MB"
     );
 }

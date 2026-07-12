@@ -1,14 +1,16 @@
 //! The scalar abstraction behind the wasm-shaped kernels (f32/c32 phase,
 //! architect direction 2026-07-11).
 //!
-//! Every kernel in this crate is generic over [`WasmScalar`]: the driver
-//! logic is written once, and the hot flat-SIMD primitives (`axpy`, `dot`,
-//! `scale`) are implemented per type at the natural lane width — `f64x2`
-//! (2 lanes, 2× unrolled) and `f32x4` (4 lanes, 2× unrolled). f32 exists
-//! for the ~2× mechanism pair on wasm SIMD128: double the lanes for
+//! Every real kernel in this crate is generic over [`WasmScalar`]: the
+//! driver logic is written once, and the hot flat-SIMD primitives (`axpy`,
+//! `dot`, `scale`) are implemented per type at the natural lane width —
+//! `f64x2` (2 lanes, 2× unrolled) and `f32x4` (4 lanes, 2× unrolled). f32
+//! exists for the ~2× mechanism pair on wasm SIMD128: double the lanes for
 //! compute-bound work, half the memory traffic for bandwidth-bound work,
-//! at ~7 significant digits (`EPS` ≈ 6e-8). Complex kernels do not exist
-//! yet for either width; c32/c64 run through faer's generic paths.
+//! at ~7 significant digits (`EPS` ≈ 6e-8). Complex kernels are c64-typed
+//! rather than generic (see `hessenberg_cplx` / `schur_small_cplx` /
+//! `eigvec_cplx`, with their simd128 primitives in `cplx`); c32 kernels
+//! do not exist — c32 runs through faer's generic paths.
 //!
 //! The `RealField` supertrait is what lets the same generic code hand the
 //! O(n³) bulk to `faer::linalg::matmul` and its friends.

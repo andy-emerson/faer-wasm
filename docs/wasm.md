@@ -223,9 +223,11 @@ live *outside* `SchurParams` — `blocking_threshold` doubles as `nmin`
 inside the solver). faer's own `.eigenvalues()` takes no params; on wasm
 prefer `faer-schur::real::real_eigenvalues` (eigenvalues-only pipeline)
 or, fastest measured, the `faer-wasm-kernels` Hessenberg + `hqr`
-pipeline (replication-gated wins over scipy at n=64–256 and 1024,
-parity at 512). Tables in `research-eig-wasm-2026-07.md`; the parameters
-are provisional pending the global tuning pass (ROADMAP tuning freeze).
+pipeline (replication-gated wins over scipy at all five sizes n=64–1024;
+the old "parity at 512" verdict was leak-allocator tax on our side —
+post-fix it is a separated 1.52× win, run 29157035070). Tables in
+`research-eig-wasm-2026-07.md`; the parameters are provisional pending
+the global tuning pass (ROADMAP tuning freeze).
 
 ## 8. Schur decomposition + eigenvalue reordering (`faer-schur`)
 

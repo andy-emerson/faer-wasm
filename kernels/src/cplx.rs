@@ -1,9 +1,11 @@
-//! c64 helpers for the complex Schur kernels (Schur campaign decision
-//! point (e), 2026-07-11). Flat scalar complex arithmetic over
-//! `faer::c64` (= `num_complex::Complex<f64>`) — deliberately no explicit
-//! simd128 yet: the Jacobi-probe discipline says build the bare correct
-//! thing, measure on the runner, then decide where simd pays. The O(n³)
-//! bulk still routes through faer's c64 gemm (a measured 4.8–5.3× win).
+//! c64 helpers for the complex kernels (Schur campaign decision point
+//! (e), 2026-07-11; eigenvector campaign 2026-07-12). Scalar building
+//! blocks over `faer::c64` (= `num_complex::Complex<f64>`) plus the
+//! simd128 streaming primitives that measurement earned: the `crot`
+//! rotation applies (kept on same-machine A/B evidence, 1.17–1.25×
+//! where measurement separates) and the `caxpy`/`cscale_re` streams of
+//! the ctrevc back-substitution — one c64 per 128-bit lane. The O(n³)
+//! bulk still routes through faer's c64 gemm (a measured 4.5–5.4× win).
 
 use faer::c64;
 

@@ -1,5 +1,12 @@
 # SVD wasm-shaping research — sequential focused passes (2026-07-10)
 
+> **Status note (2026-07-12 doc sweep):** the "0.5–0.8× scipy" figures
+> below are PRE-allocator-fix — the leak-only bump allocator was taxing
+> our side of every large-n benchmark (see docs/wasm.md §2). Post-fix
+> (run 29157035070) faer's unchanged SVD measures **0.7–1.5×**, winning
+> at n≥256. The mechanism analysis below still stands; only the absolute
+> ceiling numbers moved.
+
 Deep-dive on SVD alone, run as **two sequential focused passes** (architect
 method: pass 1 orients and tells pass 2 what to chase; don't front-load a
 fixed brief). Pass 1 mapped the approaches; pass 2 drilled the one it

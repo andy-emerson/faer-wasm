@@ -365,6 +365,13 @@ measurably loses. The RQ4 prediction half-held: it widened 64/128 as
 predicted; it did not flip 256 — c64@256 stays the campaign's one
 recorded residual vs scipy (0.76–0.90× depending on the machine drawn).
 
+**Postscript (2026-07-12, run 29177564170):** a third runner machine
+read c64@256 as a separated **1.21× WIN** — the "residual" is not a
+fixed loss but machine-dependent near-parity. Generalized as the
+verdict-stability rule (README evidence grid): rows with margins under
+~1.3× flip WIN/LOSS with the CI machine drawn; margins ≥1.4× replicate
+on every machine.
+
 **f32 Schur row** (run 29172715791 main grid, closing the coverage
 gap): 1.7× / 2.5× / 2.2× / 1.1× at n=64/128/256/512 vs
 `scipy.linalg.schur(a32)` — the same shapes that win at f64 win at f32,

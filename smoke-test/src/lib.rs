@@ -235,6 +235,9 @@ pub extern "C" fn dense_c64_probe() -> f64 {
 mod wasm_shim {
     use core::alloc::{GlobalAlloc, Layout};
 
+    // NB deliberately duplicated in bench/src/lib.rs — this crate is the
+    // zero-import consumer example and must stay self-contained; keep the
+    // two shims in sync (2026-07-12 sweep note).
     // LIFO-rewind bump allocator over memory.grow, so the module needs no
     // imports at all. Upgraded from leak-only 2026-07-11: faer's c64 matmul
     // allocates per-call temporaries through the global allocator (measured

@@ -90,30 +90,6 @@ pub extern "C" fn run_schur_c64() -> f64 {
     sc.t[(0, 0)].re + sc.z[(n - 1, n - 1)].im + sc.w[0].re
 }
 
-// Schur with an explicit blocking threshold (0 = library default), for the
-// wasm crossover sweep — mirrors run_lu_factor_tuned / run_qr_factor_tuned.
-// Isolated rank-k trailing update at LU shapes: C(m-k,m-k) -= A(m-k,k)*B(k,m-k)
-#[no_mangle]
-pub extern "C" fn run_rank_update(k: usize) -> f64 {
-    use faer::linalg::matmul::matmul;
-    use faer::{Accum, Par};
-    let s = state();
-    let n = s.a.nrows();
-    let k = k.min(n / 2);
-    let mut c = s.b.to_owned();
-    let a21 = s.a.as_ref().submatrix(k, 0, n - k, k);
-    let a12 = s.a.as_ref().submatrix(0, k, k, n - k);
-    matmul(
-        c.as_mut().submatrix_mut(k, k, n - k, n - k),
-        Accum::Add,
-        a21,
-        a12,
-        -1.0,
-        Par::Seq,
-    );
-    c[(k, k)] + c[(n - 1, n - 1)]
-}
-
 // The wasm-shaped kernels (kernels/ crate): lean panels + faer-gemm bulk.
 #[no_mangle]
 pub extern "C" fn run_lu_factor_wk(nb: usize) -> f64 {
@@ -349,36 +325,6 @@ pub extern "C" fn run_bidiag_only() -> f64 {
 use faer::linalg::evd::hessenberg;
 use faer::linalg::evd::schur::{real_schur, SchurParams};
 
-// faer's Hessenberg reduction ALONE (the front of the eigvals pipeline),
-// mirroring evd_imp's first phase without the Z accumulation (eigenvalues
-// only never forms Z). Timed against run_gen_evd for the phase split.
-#[no_mangle]
-pub extern "C" fn run_hess_only() -> f64 {
-    let s = state();
-    let n = s.a.nrows();
-    let bs = qr_np::recommended_block_size::<f64>(n - 1, n - 1);
-    let mut h = s.a.to_owned();
-    let mut hh = Mat::<f64>::zeros(bs, n - 1);
-    let mut mem = MemBuffer::new(hessenberg::hessenberg_in_place_scratch::<f64>(
-        n,
-        bs,
-        Par::Seq,
-        Default::default(),
-    ));
-    hessenberg::hessenberg_in_place(
-        h.as_mut(),
-        hh.as_mut(),
-        Par::Seq,
-        MemStack::new(&mut mem),
-        Default::default(),
-    );
-    h[(0, 0)] + h[(n - 1, n - 2)]
-}
-
-// LAPACK iparmq-style shift count (ISPEC=15 table, evaluated on the ACTIVE
-// block like dlaqr0 does; usize::ilog2 approximates NINT(LOG2)). faer's
-// default uses the FULL dimension and a different table (32 for n<590 where
-// LAPACK grows to ~n/log2(n)~56 by n=512).
 extern "C" fn shift_count_lapack(_dim: usize, active: usize) -> usize {
     let nh = Ord::max(active, 4);
     let ns = if nh < 30 {
@@ -471,72 +417,6 @@ pub extern "C" fn run_eigvals_tuned(blocking: usize, nibble: usize, profile: usi
     eigvals_tuned_imp(blocking, nibble, profile).0
 }
 
-// Diagnostic: faer-schur's real_eigenvalues (faer Hessenberg -> multishift
-// QR, want_t=false, no Z) with the per-n routed params. Superseded as the
-// shipping path by run_eigvals_k3 (kernel Hessenberg + hqr kernel); kept
-// as the faer-front-end comparison arm and blocked-Hessenberg canary.
-#[no_mangle]
-pub extern "C" fn run_eigvals_wk() -> f64 {
-    let s = state();
-    let n = s.a.nrows();
-    let (w_re, w_im) = faer_schur::real::real_eigenvalues(s.a.as_ref(), Par::Seq).unwrap();
-    w_re[0] + w_im[n - 1]
-}
-
-// Fix-2 probes: the flat-simd128 Hessenberg kernel alone (vs run_hess_only,
-// faer's reduction), and the full eigvals pipeline with the kernel front-end
-// (kernel Hessenberg -> faer multishift QR at the measured 480 threshold).
-#[no_mangle]
-pub extern "C" fn run_hess_wk() -> f64 {
-    let s = state();
-    let n = s.a.nrows();
-    let mut h = s.a.to_owned();
-    let mut tau = alloc::vec![0.0f64; n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![0.0f64; n];
-    faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
-    h[(0, 0)] + h[(n - 1, n - 2)]
-}
-
-#[no_mangle]
-pub extern "C" fn run_eigvals_hk() -> f64 {
-    let s = state();
-    let n = s.a.nrows();
-    let params = faer_schur::real::recommended_eigenvalues_params(n);
-    let mut h = s.a.to_owned();
-    let mut tau = alloc::vec![0.0f64; n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![0.0f64; n];
-    faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
-    for j in 0..n {
-        for i in j + 2..n {
-            h[(i, j)] = 0.0;
-        }
-    }
-    let mut w_re = faer::Col::<f64>::zeros(n);
-    let mut w_im = faer::Col::<f64>::zeros(n);
-    let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<f64>(
-        n,
-        n,
-        false,
-        false,
-        Par::Seq,
-        params,
-    ));
-    let (info, _, _) = real_schur::multishift_qr::<f64>(
-        false,
-        h.as_mut(),
-        None,
-        w_re.as_mut(),
-        w_im.as_mut(),
-        0,
-        n,
-        Par::Seq,
-        MemStack::new(&mut mem),
-        params,
-    );
-    assert!(info == 0, "eigvals_hk did not converge");
-    w_re[0] + w_im[n - 1]
-}
-
 // The full fix-1+2+3 pipeline: kernel Hessenberg (fix 2) + hand double-shift
 // hqr iteration (fix 3) below the measured 480 crossover (fix 1), repaired
 // faer multishift above it.
@@ -589,32 +469,41 @@ pub extern "C" fn run_eigvals_k3() -> f64 {
     }
 }
 
-// ---- Schur campaign (2026-07-11): the full-Schur kernel pipeline. Kernel
-// Hessenberg (fix 2) + backward-accumulated Q formation + hqr want_t+Z
-// below the 480 crossover; above it, kernel Hessenberg front-end + faer's
-// repaired multishift (want_t, Z seeded with the accumulated Q) — the
-// multishift path also inherits the accumulated-U gemm batching the
-// research identified (docs/research-schur-wasm-2026-07.md), so the
-// benchmark grid directly answers its open question 2.
-fn schur_k_imp(want_t: bool, want_z: bool) -> f64 {
-    let s = state();
-    let n = s.a.nrows();
-    let mut h = s.a.to_owned();
-    let mut tau = alloc::vec![0.0f64; n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![0.0f64; n];
+// ---- Schur campaign (2026-07-11) / eigenvector campaign (2026-07-12):
+// the full-Schur and full-eig kernel pipelines. Kernel Hessenberg (fix 2)
+// + backward-accumulated Q formation + hqr want_t+Z below the 480
+// crossover; above it, kernel Hessenberg front-end + faer's repaired
+// multishift (want_t, Z seeded with the accumulated Q) — the multishift
+// path also inherits the accumulated-U gemm batching the research
+// identified (docs/research-schur-wasm-2026-07.md). One generic body
+// serves the f64 and f32 exports (they began as hand-copies; folded in
+// the 2026-07-12 sweep), and a c64 body serves the complex twins.
+
+/// A → (T, Z): the real Schur pipeline at either precision. `z` is
+/// allocated either way but only formed when `want_z` (matching what the
+/// exports always did).
+fn schur_pipeline<T: faer_wasm_kernels::scalar::WasmScalarRefl>(
+    a: faer::MatRef<'_, T>,
+    want_t: bool,
+    want_z: bool,
+) -> (faer::Mat<T>, faer::Mat<T>) {
+    let n = a.nrows();
+    let mut h = a.to_owned();
+    let mut tau = alloc::vec![T::ZERO; n.saturating_sub(2).max(1)];
+    let mut work = alloc::vec![T::ZERO; n];
     faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
-    let mut z = faer::Mat::<f64>::zeros(n, n);
+    let mut z = faer::Mat::<T>::zeros(n, n);
     if want_z {
         faer_wasm_kernels::hessenberg::hessenberg_form_q(h.as_ref(), &tau, z.as_mut());
     }
     for j in 0..n {
         for i in j + 2..n {
-            h[(i, j)] = 0.0;
+            h[(i, j)] = T::ZERO;
         }
     }
     if n < 480 {
-        let mut w_re = alloc::vec![0.0f64; n];
-        let mut w_im = alloc::vec![0.0f64; n];
+        let mut w_re = alloc::vec![T::ZERO; n];
+        let mut w_im = alloc::vec![T::ZERO; n];
         let info = faer_wasm_kernels::schur_small::hqr_schur_in_place(
             h.as_mut(),
             if want_z { Some(z.as_mut()) } else { None },
@@ -622,13 +511,12 @@ fn schur_k_imp(want_t: bool, want_z: bool) -> f64 {
             &mut w_im,
             want_t,
         );
-        assert!(info == 0, "schur_k (hqr) did not converge");
-        h[(0, 0)] + if want_z { z[(n - 1, n - 1)] } else { 0.0 } + w_re[0]
+        assert!(info == 0, "schur pipeline (hqr) did not converge");
     } else {
         let params = faer_schur::real::recommended_params(n);
-        let mut w_re = faer::Col::<f64>::zeros(n);
-        let mut w_im = faer::Col::<f64>::zeros(n);
-        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<f64>(
+        let mut w_re = faer::Col::<T>::zeros(n);
+        let mut w_im = faer::Col::<T>::zeros(n);
+        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<T>(
             n,
             n,
             want_t,
@@ -636,7 +524,7 @@ fn schur_k_imp(want_t: bool, want_z: bool) -> f64 {
             Par::Seq,
             params,
         ));
-        let (info, _, _) = real_schur::multishift_qr::<f64>(
+        let (info, _, _) = real_schur::multishift_qr::<T>(
             want_t,
             h.as_mut(),
             if want_z { Some(z.as_mut()) } else { None },
@@ -648,24 +536,98 @@ fn schur_k_imp(want_t: bool, want_z: bool) -> f64 {
             MemStack::new(&mut mem),
             params,
         );
-        assert!(info == 0, "schur_k (multishift) did not converge");
+        assert!(info == 0, "schur pipeline (multishift) did not converge");
         // faer's blocked path leaves workspace junk below the subdiagonal
         // (faer-schur zeroes it too); include the cleanup in the timed cost
         if want_t {
             for j in 0..n {
                 for i in j + 2..n {
-                    h[(i, j)] = 0.0;
+                    h[(i, j)] = T::ZERO;
                 }
             }
         }
-        h[(0, 0)] + if want_z { z[(n - 1, n - 1)] } else { 0.0 } + w_re[0]
     }
+    (h, z)
+}
+
+/// A → (T, Z): the c64 Schur pipeline. Complex Hessenberg +
+/// backward-accumulated Q + single-shift chqr below the 480 crossover
+/// (measured identical to the real crossover, run 29134291933,
+/// provisional under the tuning freeze); faer's complex multishift above.
+fn schur_c64_pipeline(
+    a: faer::MatRef<'_, faer::c64>,
+    want_t: bool,
+    want_z: bool,
+) -> (faer::Mat<faer::c64>, faer::Mat<faer::c64>) {
+    use faer::c64;
+    let n = a.nrows();
+    let mut h = a.to_owned();
+    let mut tau = alloc::vec![c64::new(0.0, 0.0); n.saturating_sub(2).max(1)];
+    let mut work = alloc::vec![c64::new(0.0, 0.0); n];
+    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_factor_in_place(
+        h.as_mut(),
+        &mut tau,
+        &mut work,
+    );
+    let mut z = faer::Mat::<c64>::zeros(n, n);
+    if want_z {
+        faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_form_q(h.as_ref(), &tau, z.as_mut());
+    }
+    for j in 0..n {
+        for i in j + 2..n {
+            h[(i, j)] = c64::new(0.0, 0.0);
+        }
+    }
+    if n < 480 {
+        let mut w = alloc::vec![c64::new(0.0, 0.0); n];
+        let info = faer_wasm_kernels::schur_small_cplx::chqr_schur_in_place(
+            h.as_mut(),
+            if want_z { Some(z.as_mut()) } else { None },
+            &mut w,
+            want_t,
+        );
+        assert!(info == 0, "c64 schur pipeline (chqr) did not converge");
+    } else {
+        let params = faer_schur::complex::recommended_params(n);
+        let mut w = faer::Col::<c64>::zeros(n);
+        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<c64>(
+            n,
+            n,
+            want_t,
+            want_z,
+            Par::Seq,
+            params,
+        ));
+        let (info, _, _) = faer::linalg::evd::schur::complex_schur::multishift_qr::<c64>(
+            want_t,
+            h.as_mut(),
+            if want_z { Some(z.as_mut()) } else { None },
+            w.as_mut(),
+            0,
+            n,
+            Par::Seq,
+            MemStack::new(&mut mem),
+            params,
+        );
+        assert!(info == 0, "c64 schur pipeline (multishift) did not converge");
+        if want_t {
+            for j in 0..n {
+                for i in j + 2..n {
+                    h[(i, j)] = c64::new(0.0, 0.0);
+                }
+            }
+        }
+    }
+    (h, z)
 }
 
 /// The shipping full-Schur pipeline: T + Z.
 #[no_mangle]
 pub extern "C" fn run_schur_k() -> f64 {
-    schur_k_imp(true, true)
+    let s = state();
+    let (h, z) = schur_pipeline::<f64>(s.a.as_ref(), true, true);
+    let n = h.nrows();
+    h[(0, 0)] + z[(n - 1, n - 1)]
 }
 
 /// Instrumentation toggles for the eigvals→Schur cost split (research open
@@ -673,318 +635,66 @@ pub extern "C" fn run_schur_k() -> f64 {
 /// (with Q formation), 3 = both (== run_schur_k).
 #[no_mangle]
 pub extern "C" fn run_schur_k_mode(mode: usize) -> f64 {
-    schur_k_imp(mode & 1 != 0, mode & 2 != 0)
-}
-
-/// The c64 full-Schur kernel pipeline (decision point (e)): complex
-/// Hessenberg + backward-accumulated Q + single-shift chqr (want_t + Z)
-/// below the 480 crossover; kernel front-end + faer's complex multishift
-/// above it. Same routing as run_schur_k; the crossover for c64 measured
-/// identical to the real one (run 29134291933), provisional under the
-/// tuning freeze.
-#[no_mangle]
-pub extern "C" fn run_schur_c64_k() -> f64 {
-    use faer::c64;
     let s = state();
-    let n = s.ac.nrows();
-    let mut h = s.ac.to_owned();
-    let mut tau = alloc::vec![c64::new(0.0, 0.0); n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![c64::new(0.0, 0.0); n];
-    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_factor_in_place(
-        h.as_mut(),
-        &mut tau,
-        &mut work,
-    );
-    let mut z = faer::Mat::<c64>::zeros(n, n);
-    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_form_q(h.as_ref(), &tau, z.as_mut());
-    for j in 0..n {
-        for i in j + 2..n {
-            h[(i, j)] = c64::new(0.0, 0.0);
-        }
-    }
-    if n < 480 {
-        let mut w = alloc::vec![c64::new(0.0, 0.0); n];
-        let info = faer_wasm_kernels::schur_small_cplx::chqr_schur_in_place(
-            h.as_mut(),
-            Some(z.as_mut()),
-            &mut w,
-            true,
-        );
-        assert!(info == 0, "schur_c64_k (chqr) did not converge");
-        h[(0, 0)].re + z[(n - 1, n - 1)].im + w[0].re
-    } else {
-        let params = faer_schur::complex::recommended_params(n);
-        let mut w = faer::Col::<c64>::zeros(n);
-        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<c64>(
-            n,
-            n,
-            true,
-            true,
-            Par::Seq,
-            params,
-        ));
-        let (info, _, _) = faer::linalg::evd::schur::complex_schur::multishift_qr::<c64>(
-            true,
-            h.as_mut(),
-            Some(z.as_mut()),
-            w.as_mut(),
-            0,
-            n,
-            Par::Seq,
-            MemStack::new(&mut mem),
-            params,
-        );
-        assert!(info == 0, "schur_c64_k (multishift) did not converge");
-        for j in 0..n {
-            for i in j + 2..n {
-                h[(i, j)] = c64::new(0.0, 0.0);
-            }
-        }
-        h[(0, 0)].re + z[(n - 1, n - 1)].im + w[0].re
-    }
+    let want_z = mode & 2 != 0;
+    let (h, z) = schur_pipeline::<f64>(s.a.as_ref(), mode & 1 != 0, want_z);
+    let n = h.nrows();
+    h[(0, 0)] + if want_z { z[(n - 1, n - 1)] } else { 0.0 }
 }
 
-/// TEMPORARY diagnostic (c64@n>=590 memory blowup): kernel Hessenberg +
-/// faer complex multishift alone, with an explicit blocking_threshold
-/// (0 = library default). Isolates which faer path allocates.
-#[no_mangle]
-pub extern "C" fn run_schur_c64_ms_probe(bt: usize) -> f64 {
-    use faer::c64;
-    let s = state();
-    let n = s.ac.nrows();
-    let mut h = s.ac.to_owned();
-    let mut tau = alloc::vec![c64::new(0.0, 0.0); n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![c64::new(0.0, 0.0); n];
-    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_factor_in_place(
-        h.as_mut(),
-        &mut tau,
-        &mut work,
-    );
-    for j in 0..n {
-        for i in j + 2..n {
-            h[(i, j)] = c64::new(0.0, 0.0);
-        }
-    }
-    let mut params: faer::linalg::evd::schur::SchurParams = faer::Auto::<c64>::auto();
-    if bt != 0 {
-        params.blocking_threshold = bt;
-    }
-    let mut w = faer::Col::<c64>::zeros(n);
-    let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<c64>(
-        n,
-        n,
-        false,
-        false,
-        Par::Seq,
-        params,
-    ));
-    let (info, _, _) = faer::linalg::evd::schur::complex_schur::multishift_qr::<c64>(
-        false,
-        h.as_mut(),
-        None,
-        w.as_mut(),
-        0,
-        n,
-        Par::Seq,
-        MemStack::new(&mut mem),
-        params,
-    );
-    assert!(info == 0);
-    w[0].re
-}
-
-/// f32 full-Schur pipeline (closes the last coverage gap in STATUS.md):
-/// the same generic kernels as run_schur_k at f32, faer's f32 multishift
-/// above the (provisional, freeze-held) 480 crossover. SchurParams is
-/// type-free, so the wasm routing from faer-schur applies as-is.
+/// f32 full-Schur pipeline (coverage rule: every number type the kernels
+/// support gets a row). SchurParams is type-free, so faer-schur's wasm
+/// routing applies as-is.
 #[no_mangle]
 pub extern "C" fn run_schur_k_f32() -> f64 {
     let s = state();
-    let n = s.a32.nrows();
-    let mut h = s.a32.to_owned();
-    let mut tau = alloc::vec![0.0f32; n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![0.0f32; n];
-    faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
-    let mut z = faer::Mat::<f32>::zeros(n, n);
-    faer_wasm_kernels::hessenberg::hessenberg_form_q(h.as_ref(), &tau, z.as_mut());
-    for j in 0..n {
-        for i in j + 2..n {
-            h[(i, j)] = 0.0;
-        }
-    }
-    if n < 480 {
-        let mut w_re = alloc::vec![0.0f32; n];
-        let mut w_im = alloc::vec![0.0f32; n];
-        let info = faer_wasm_kernels::schur_small::hqr_schur_in_place(
-            h.as_mut(),
-            Some(z.as_mut()),
-            &mut w_re,
-            &mut w_im,
-            true,
-        );
-        assert!(info == 0, "schur_k_f32 (hqr) did not converge");
-        (h[(0, 0)] + z[(n - 1, n - 1)] + w_re[0]) as f64
-    } else {
-        let params = faer_schur::real::recommended_params(n);
-        let mut w_re = faer::Col::<f32>::zeros(n);
-        let mut w_im = faer::Col::<f32>::zeros(n);
-        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<f32>(
-            n,
-            n,
-            true,
-            true,
-            Par::Seq,
-            params,
-        ));
-        let (info, _, _) = real_schur::multishift_qr::<f32>(
-            true,
-            h.as_mut(),
-            Some(z.as_mut()),
-            w_re.as_mut(),
-            w_im.as_mut(),
-            0,
-            n,
-            Par::Seq,
-            MemStack::new(&mut mem),
-            params,
-        );
-        assert!(info == 0, "schur_k_f32 (multishift) did not converge");
-        for j in 0..n {
-            for i in j + 2..n {
-                h[(i, j)] = 0.0;
-            }
-        }
-        (h[(0, 0)] + z[(n - 1, n - 1)] + w_re[0]) as f64
-    }
+    let (h, z) = schur_pipeline::<f32>(s.a32.as_ref(), true, true);
+    let n = h.nrows();
+    (h[(0, 0)] + z[(n - 1, n - 1)]) as f64
 }
 
-// ---- eigenvector campaign (2026-07-12): full eig = the shipping Schur
-// pipeline + the trevc-shaped eigenvector kernel (back-substitution on T,
-// triangular-matmul back-transform through Z). Same 480 routing as
-// run_schur_k. Scoreboard opponent: np.linalg.eig.
+/// The c64 full-Schur pipeline: T + Z.
+#[no_mangle]
+pub extern "C" fn run_schur_c64_k() -> f64 {
+    let s = state();
+    let (h, z) = schur_c64_pipeline(s.ac.as_ref(), true, true);
+    let n = h.nrows();
+    h[(0, 0)].re + z[(n - 1, n - 1)].im
+}
+
+// ---- eigenvector campaign (2026-07-12): full eig = the Schur pipeline +
+// the trevc-shaped eigenvector kernels (back-substitution on T,
+// triangular-matmul back-transform through Z). Scoreboard opponent:
+// np.linalg.eig.
+
 #[no_mangle]
 pub extern "C" fn run_eig_k() -> f64 {
     let s = state();
-    let n = s.a.nrows();
-    let mut h = s.a.to_owned();
-    let mut tau = alloc::vec![0.0f64; n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![0.0f64; n];
-    faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
-    let mut z = faer::Mat::<f64>::zeros(n, n);
-    faer_wasm_kernels::hessenberg::hessenberg_form_q(h.as_ref(), &tau, z.as_mut());
-    for j in 0..n {
-        for i in j + 2..n {
-            h[(i, j)] = 0.0;
-        }
-    }
-    if n < 480 {
-        let mut w_re = alloc::vec![0.0f64; n];
-        let mut w_im = alloc::vec![0.0f64; n];
-        let info = faer_wasm_kernels::schur_small::hqr_schur_in_place(
-            h.as_mut(),
-            Some(z.as_mut()),
-            &mut w_re,
-            &mut w_im,
-            true,
-        );
-        assert!(info == 0, "eig_k (hqr) did not converge");
-    } else {
-        let params = faer_schur::real::recommended_params(n);
-        let mut w_re = faer::Col::<f64>::zeros(n);
-        let mut w_im = faer::Col::<f64>::zeros(n);
-        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<f64>(
-            n,
-            n,
-            true,
-            true,
-            Par::Seq,
-            params,
-        ));
-        let (info, _, _) = real_schur::multishift_qr::<f64>(
-            true,
-            h.as_mut(),
-            Some(z.as_mut()),
-            w_re.as_mut(),
-            w_im.as_mut(),
-            0,
-            n,
-            Par::Seq,
-            MemStack::new(&mut mem),
-            params,
-        );
-        assert!(info == 0, "eig_k (multishift) did not converge");
-        for j in 0..n {
-            for i in j + 2..n {
-                h[(i, j)] = 0.0;
-            }
-        }
-    }
+    let (h, z) = schur_pipeline::<f64>(s.a.as_ref(), true, true);
+    let n = h.nrows();
     let mut v = faer::Mat::<f64>::zeros(n, n);
     faer_wasm_kernels::eigvec::trevc_in_place(h.as_ref(), z.as_ref(), v.as_mut());
     v[(0, 0)] + v[(n - 1, n - 1)] + h[(0, 0)]
 }
 
-/// c64 full eig: the complex Schur pipeline + ctrevc (same 480 routing).
-/// Scoreboard opponent: np.linalg.eig on a complex matrix.
+/// f32 twin of run_eig_k.
+#[no_mangle]
+pub extern "C" fn run_eig_k_f32() -> f64 {
+    let s = state();
+    let (h, z) = schur_pipeline::<f32>(s.a32.as_ref(), true, true);
+    let n = h.nrows();
+    let mut v = faer::Mat::<f32>::zeros(n, n);
+    faer_wasm_kernels::eigvec::trevc_in_place(h.as_ref(), z.as_ref(), v.as_mut());
+    (v[(0, 0)] + v[(n - 1, n - 1)] + h[(0, 0)]) as f64
+}
+
+/// c64 twin of run_eig_k (complex Schur pipeline + ctrevc).
 #[no_mangle]
 pub extern "C" fn run_eig_c64_k() -> f64 {
-    use faer::c64;
     let s = state();
-    let n = s.ac.nrows();
-    let mut h = s.ac.to_owned();
-    let mut tau = alloc::vec![c64::new(0.0, 0.0); n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![c64::new(0.0, 0.0); n];
-    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_factor_in_place(
-        h.as_mut(),
-        &mut tau,
-        &mut work,
-    );
-    let mut z = faer::Mat::<c64>::zeros(n, n);
-    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_form_q(h.as_ref(), &tau, z.as_mut());
-    for j in 0..n {
-        for i in j + 2..n {
-            h[(i, j)] = c64::new(0.0, 0.0);
-        }
-    }
-    if n < 480 {
-        let mut w = alloc::vec![c64::new(0.0, 0.0); n];
-        let info = faer_wasm_kernels::schur_small_cplx::chqr_schur_in_place(
-            h.as_mut(),
-            Some(z.as_mut()),
-            &mut w,
-            true,
-        );
-        assert!(info == 0, "eig_c64_k (chqr) did not converge");
-    } else {
-        let params = faer_schur::complex::recommended_params(n);
-        let mut w = faer::Col::<c64>::zeros(n);
-        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<c64>(
-            n,
-            n,
-            true,
-            true,
-            Par::Seq,
-            params,
-        ));
-        let (info, _, _) = faer::linalg::evd::schur::complex_schur::multishift_qr::<c64>(
-            true,
-            h.as_mut(),
-            Some(z.as_mut()),
-            w.as_mut(),
-            0,
-            n,
-            Par::Seq,
-            MemStack::new(&mut mem),
-            params,
-        );
-        assert!(info == 0, "eig_c64_k (multishift) did not converge");
-        for j in 0..n {
-            for i in j + 2..n {
-                h[(i, j)] = c64::new(0.0, 0.0);
-            }
-        }
-    }
-    let mut v = faer::Mat::<c64>::zeros(n, n);
+    let (h, z) = schur_c64_pipeline(s.ac.as_ref(), true, true);
+    let n = h.nrows();
+    let mut v = faer::Mat::<faer::c64>::zeros(n, n);
     faer_wasm_kernels::eigvec_cplx::ctrevc_in_place(h.as_ref(), z.as_ref(), v.as_mut());
     v[(0, 0)].re + v[(n - 1, n - 1)].im + h[(0, 0)].re
 }
@@ -999,70 +709,6 @@ pub extern "C" fn run_eig() -> f64 {
     let e = s.a.eigen().unwrap();
     let u = e.U();
     u[(0, 0)].re + u[(n - 1, n - 1)].im
-}
-
-/// f32 twin of run_eig_k (coverage rule: every number type the kernel
-/// supports gets a row in the same campaign).
-#[no_mangle]
-pub extern "C" fn run_eig_k_f32() -> f64 {
-    let s = state();
-    let n = s.a32.nrows();
-    let mut h = s.a32.to_owned();
-    let mut tau = alloc::vec![0.0f32; n.saturating_sub(2).max(1)];
-    let mut work = alloc::vec![0.0f32; n];
-    faer_wasm_kernels::hessenberg::hessenberg_factor_in_place(h.as_mut(), &mut tau, &mut work);
-    let mut z = faer::Mat::<f32>::zeros(n, n);
-    faer_wasm_kernels::hessenberg::hessenberg_form_q(h.as_ref(), &tau, z.as_mut());
-    for j in 0..n {
-        for i in j + 2..n {
-            h[(i, j)] = 0.0;
-        }
-    }
-    if n < 480 {
-        let mut w_re = alloc::vec![0.0f32; n];
-        let mut w_im = alloc::vec![0.0f32; n];
-        let info = faer_wasm_kernels::schur_small::hqr_schur_in_place(
-            h.as_mut(),
-            Some(z.as_mut()),
-            &mut w_re,
-            &mut w_im,
-            true,
-        );
-        assert!(info == 0, "eig_k_f32 (hqr) did not converge");
-    } else {
-        let params = faer_schur::real::recommended_params(n);
-        let mut w_re = faer::Col::<f32>::zeros(n);
-        let mut w_im = faer::Col::<f32>::zeros(n);
-        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<f32>(
-            n,
-            n,
-            true,
-            true,
-            Par::Seq,
-            params,
-        ));
-        let (info, _, _) = real_schur::multishift_qr::<f32>(
-            true,
-            h.as_mut(),
-            Some(z.as_mut()),
-            w_re.as_mut(),
-            w_im.as_mut(),
-            0,
-            n,
-            Par::Seq,
-            MemStack::new(&mut mem),
-            params,
-        );
-        assert!(info == 0, "eig_k_f32 (multishift) did not converge");
-        for j in 0..n {
-            for i in j + 2..n {
-                h[(i, j)] = 0.0;
-            }
-        }
-    }
-    let mut v = faer::Mat::<f32>::zeros(n, n);
-    faer_wasm_kernels::eigvec::trevc_in_place(h.as_ref(), z.as_ref(), v.as_mut());
-    (v[(0, 0)] + v[(n - 1, n - 1)] + h[(0, 0)]) as f64
 }
 
 // ---- f32 rows (f32/c32 phase, architect direction 2026-07-11): the four
@@ -1151,6 +797,10 @@ pub extern "C" fn run_eigvals_k3_f32() -> f64 {
     }
 }
 
+// KEPT by the 2026-07-12 sweep (no live script, but cited as the R-ratio
+// measurement instrument in docs/research-eig-wasm-2026-07.md — the tool
+// behind the gemm-vs-streaming throughput ratio the routing decisions and
+// a possible measurement paper rest on).
 // Fix-3 profiling: faer matmul at the multishift sweep's accumulated-update
 // shapes -- C(nb x ib) = U2^T(nb x nb) * A(nb x ib) plus the copy-back the
 // sweep does after every such call. At n=128 the sweep uses nb ~ 24 and
@@ -1182,6 +832,9 @@ pub extern "C" fn run_sweep_gemm(nb: usize, ib: usize, reps: usize) -> f64 {
     a_slice[(0, 0)] + a_slice[(nb - 1, ib - 1)]
 }
 
+// KEPT by the 2026-07-12 sweep (no live script, but this is the instrument
+// that root-caused patch 0004 — README evidence grid — and the tool for
+// re-verifying that patch on every faer release adoption).
 // Iteration-count probe: AED calls and multishift sweeps for one solve,
 // packed as aed*100000 + sweeps. Distinguishes "faer converges slower"
 // (count explosion) from "each sweep is slower" (counts match LAPACK's
@@ -1210,30 +863,6 @@ pub extern "C" fn run_stream() -> f64 {
         }
         *ap
     }
-}
-
-// One-sided Jacobi SVD probe (kernels/src/svd.rs): the bidiagonalization-
-// avoiding full SVD. run_svd_jacobi times it; run_svd_jacobi_sweeps returns
-// the sweep count so the profiler can report it per size.
-#[no_mangle]
-pub extern "C" fn run_svd_jacobi() -> f64 {
-    let s = state();
-    let n = s.a.nrows();
-    let mut u = s.a.to_owned();
-    let mut v = Mat::<f64>::zeros(n, n);
-    let mut sv = alloc::vec![0.0f64; n];
-    faer_wasm_kernels::svd::jacobi_svd_in_place(u.as_mut(), v.as_mut(), &mut sv, 60, 1e-13);
-    sv[0] + sv[n - 1]
-}
-
-#[no_mangle]
-pub extern "C" fn run_svd_jacobi_sweeps() -> f64 {
-    let s = state();
-    let n = s.a.nrows();
-    let mut u = s.a.to_owned();
-    let mut v = Mat::<f64>::zeros(n, n);
-    let mut sv = alloc::vec![0.0f64; n];
-    faer_wasm_kernels::svd::jacobi_svd_in_place(u.as_mut(), v.as_mut(), &mut sv, 60, 1e-13) as f64
 }
 
 // Standalone GEMV y = A*x — the memory-bound kernel bidiagonalization spends
@@ -1356,6 +985,9 @@ pub extern "C" fn run_qr_factor_wk() -> f64 {
 mod wasm_shim {
     use core::alloc::{GlobalAlloc, Layout};
 
+    // NB deliberately duplicated in smoke-test/src/lib.rs (that crate is
+    // the zero-import consumer example and must stay self-contained) —
+    // keep the two shims in sync (2026-07-12 sweep note).
     // LIFO-rewind bump allocator over memory.grow (upgraded from leak-only
     // 2026-07-11): freeing the MOST RECENT allocation rewinds the bump
     // pointer, so nested temporaries — the pattern of faer's per-call c64
