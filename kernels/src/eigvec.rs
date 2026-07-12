@@ -58,8 +58,9 @@ fn ladiv1<T: WasmScalar>(a: T, b: T, c: T, d: T) -> (T, T) {
 	(p, q)
 }
 
-/// (p, q) = (a + ib) / (c + id)
-fn ladiv<T: WasmScalar>(a: T, b: T, c: T, d: T) -> (T, T) {
+/// (p, q) = (a + ib) / (c + id) — also used by the c64 twin
+/// ([`crate::eigvec_cplx`]) at `T = f64`
+pub(crate) fn ladiv<T: WasmScalar>(a: T, b: T, c: T, d: T) -> (T, T) {
 	let half = T::from_f64(0.5);
 	let two = T::from_f64(2.0);
 	let (mut aa, mut bb, mut cc, mut dd) = (a, b, c, d);

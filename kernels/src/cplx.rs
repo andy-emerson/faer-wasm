@@ -241,3 +241,71 @@ unsafe fn crot_row_pair_simd(p: *mut c64, stride: usize, c: f64, s: c64, len: us
 		j += 1;
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Streaming c64 primitives for the complex eigenvector kernel (eigenvector
+// campaign, 2026-07-12): the back-substitution's column updates and the
+// scale-by-real used by anti-overflow rescaling and normalization. Same
+// one-c64-per-128-bit-lane encoding as the `crot` applies.
+
+/// `dst[i] -= alpha · src[i]` over `len` contiguous c64 elements (the
+/// complex axpy of the trevc column updates).
+#[inline(always)]
+pub unsafe fn caxpy(dst: *mut c64, src: *const c64, alpha: c64, len: usize) {
+	#[cfg(target_arch = "wasm32")]
+	{
+		caxpy_simd(dst, src, alpha, len);
+	}
+	#[cfg(not(target_arch = "wasm32"))]
+	{
+		for i in 0..len {
+			*dst.add(i) -= alpha * *src.add(i);
+		}
+	}
+}
+
+/// `dst[i] *= s` (real scale) over `len` contiguous c64 elements.
+#[inline(always)]
+pub unsafe fn cscale_re(dst: *mut c64, s: f64, len: usize) {
+	#[cfg(target_arch = "wasm32")]
+	{
+		cscale_re_simd(dst, s, len);
+	}
+	#[cfg(not(target_arch = "wasm32"))]
+	{
+		for i in 0..len {
+			*dst.add(i) = cmul_real(*dst.add(i), s);
+		}
+	}
+}
+
+#[cfg(target_arch = "wasm32")]
+#[target_feature(enable = "simd128")]
+unsafe fn caxpy_simd(dst: *mut c64, src: *const c64, alpha: c64, len: usize) {
+	use core::arch::wasm32::*;
+	// alpha·z = alpha.re·(re,im) + (−alpha.im·im, alpha.im·re)
+	let vre = f64x2_splat(alpha.re);
+	let vim = f64x2(-alpha.im, alpha.im);
+	let mut i = 0usize;
+	while i < len {
+		let s = v128_load(src.add(i) as *const v128);
+		let d = v128_load(dst.add(i) as *const v128);
+		let ssw = i64x2_shuffle::<1, 0>(s, s);
+		let az = f64x2_add(f64x2_mul(vre, s), f64x2_mul(vim, ssw));
+		v128_store(dst.add(i) as *mut v128, f64x2_sub(d, az));
+		i += 1;
+	}
+}
+
+#[cfg(target_arch = "wasm32")]
+#[target_feature(enable = "simd128")]
+unsafe fn cscale_re_simd(dst: *mut c64, s: f64, len: usize) {
+	use core::arch::wasm32::*;
+	let vs = f64x2_splat(s);
+	let mut i = 0usize;
+	while i < len {
+		let d = v128_load(dst.add(i) as *const v128);
+		v128_store(dst.add(i) as *mut v128, f64x2_mul(d, vs));
+		i += 1;
+	}
+}

@@ -47,6 +47,7 @@ const OPS = [
 	// eigenvector campaign (2026-07-12): full eig (values + right vectors)
 	['eig', 'run_eig', [], 'np.linalg.eig(a)'],
 	['eig_k', 'run_eig_k', [], 'np.linalg.eig(a)'],
+	['eig_c64_k', 'run_eig_c64_k', [], 'np.linalg.eig(ac)'],
 	// f32 rows (f32/c32 phase): both sides in single precision — numpy
 	// dispatches the LAPACK s-routines, faer rows ride the generic kernels.
 	['matmul_f32', 'run_matmul_f32', [], 'a32 @ b32'],
@@ -183,6 +184,7 @@ const REP_OPS = [
 	['schur_k', 'run_schur_k', 'sla.schur(a)'],
 	['schur_c64_k', 'run_schur_c64_k', "sla.schur(ac, output='complex')"],
 	['eig_k', 'run_eig_k', 'np.linalg.eig(a)'],
+	['eig_c64_k', 'run_eig_c64_k', 'np.linalg.eig(ac)'],
 ];
 const stats = (xs) => {
 	const s = [...xs].sort((x, y) => x - y);

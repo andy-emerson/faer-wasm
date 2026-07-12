@@ -20,6 +20,7 @@ extern crate alloc;
 
 pub mod cplx;
 pub mod eigvec;
+pub mod eigvec_cplx;
 pub mod hessenberg;
 pub mod hessenberg_cplx;
 pub mod scalar;

@@ -924,6 +924,71 @@ pub extern "C" fn run_eig_k() -> f64 {
     v[(0, 0)] + v[(n - 1, n - 1)] + h[(0, 0)]
 }
 
+/// c64 full eig: the complex Schur pipeline + ctrevc (same 480 routing).
+/// Scoreboard opponent: np.linalg.eig on a complex matrix.
+#[no_mangle]
+pub extern "C" fn run_eig_c64_k() -> f64 {
+    use faer::c64;
+    let s = state();
+    let n = s.ac.nrows();
+    let mut h = s.ac.to_owned();
+    let mut tau = alloc::vec![c64::new(0.0, 0.0); n.saturating_sub(2).max(1)];
+    let mut work = alloc::vec![c64::new(0.0, 0.0); n];
+    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_factor_in_place(
+        h.as_mut(),
+        &mut tau,
+        &mut work,
+    );
+    let mut z = faer::Mat::<c64>::zeros(n, n);
+    faer_wasm_kernels::hessenberg_cplx::hessenberg_cplx_form_q(h.as_ref(), &tau, z.as_mut());
+    for j in 0..n {
+        for i in j + 2..n {
+            h[(i, j)] = c64::new(0.0, 0.0);
+        }
+    }
+    if n < 480 {
+        let mut w = alloc::vec![c64::new(0.0, 0.0); n];
+        let info = faer_wasm_kernels::schur_small_cplx::chqr_schur_in_place(
+            h.as_mut(),
+            Some(z.as_mut()),
+            &mut w,
+            true,
+        );
+        assert!(info == 0, "eig_c64_k (chqr) did not converge");
+    } else {
+        let params = faer_schur::complex::recommended_params(n);
+        let mut w = faer::Col::<c64>::zeros(n);
+        let mut mem = MemBuffer::new(faer::linalg::evd::schur::multishift_qr_scratch::<c64>(
+            n,
+            n,
+            true,
+            true,
+            Par::Seq,
+            params,
+        ));
+        let (info, _, _) = faer::linalg::evd::schur::complex_schur::multishift_qr::<c64>(
+            true,
+            h.as_mut(),
+            Some(z.as_mut()),
+            w.as_mut(),
+            0,
+            n,
+            Par::Seq,
+            MemStack::new(&mut mem),
+            params,
+        );
+        assert!(info == 0, "eig_c64_k (multishift) did not converge");
+        for j in 0..n {
+            for i in j + 2..n {
+                h[(i, j)] = c64::new(0.0, 0.0);
+            }
+        }
+    }
+    let mut v = faer::Mat::<c64>::zeros(n, n);
+    faer_wasm_kernels::eigvec_cplx::ctrevc_in_place(h.as_ref(), z.as_ref(), v.as_mut());
+    v[(0, 0)].re + v[(n - 1, n - 1)].im + h[(0, 0)].re
+}
+
 /// faer's own full eigendecomposition (values + vectors) — the baseline
 /// our eig_k pipeline is measured against, same role as run_schur for
 /// the Schur rows.
