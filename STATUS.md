@@ -38,6 +38,7 @@ running in the browser engine. Numbers >1 mean we're faster.
 | SVD | ✓ (faer's, unmodified) | ✓ | ✓ | 0.7–1.5× (near its ceiling — proven) |
 | eigenvalues | ✓ our kernel | ✓ | ✓ | 1.5–2.1× faster, all sizes |
 | Schur (T and Z) | ✓ our kernel | ✓ | ✓ | 1.1–1.7× faster up to n=512; ~tie at 1024 |
+| eigenvectors (full eig) | ✓ our kernel (new 07-12) | ✓ | ✓ | 1.5–2× faster, all sizes incl. 1024 |
 
 ### Single precision, real (f32)
 
@@ -45,6 +46,7 @@ running in the browser engine. Numbers >1 mean we're faster.
 | - | - | - | - | - |
 | multiply, LU, QR, eigenvalues | ✓ same kernels as f64 | ✓ | ✓ | 2–9× faster |
 | Schur | ✓ same kernel as f64 | ✓ | ✓ | 1.7–2.5× faster to n=256, 1.1× at 512 |
+| eigenvectors (full eig) | ✓ same kernel as f64 | ✓ | ✓ | 2.9–4.4× faster |
 
 ### Double precision, complex (c64)
 
@@ -52,6 +54,7 @@ running in the browser engine. Numbers >1 mean we're faster.
 | - | - | - | - | - |
 | multiply, LU, QR, SVD, eigen | ✓ (faer's, unmodified) | ✓ | ✓ | mixed: matmul 4–5×, QR 2–4×, LU ~1× |
 | Schur | ✓ our kernel + SIMD rotations | ✓ | ✓ | 1.0–1.6× faster, except ~0.8–0.9× at n=256 |
+| eigenvectors (full eig) | **✗ — gap** | — | — | needs the complex twin of the new eigenvector kernel; scoped, not built |
 
 ### Single precision, complex (c32)
 

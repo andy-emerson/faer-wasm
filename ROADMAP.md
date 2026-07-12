@@ -350,9 +350,19 @@ then one global replication-graded tuning pass.
    closes as the campaign's one recorded residual (0.76–0.90× vs scipy,
    machine-dependent; mechanism not yet located). Full close-out in the
    research doc.
-2. **Eigenvectors (nonsymmetric `eig`)** — needs Schur first:
-   `trevc`-shaped back-substitution on T + back-transform through Z, both
-   kernel-shaped; scoreboard row vs `np.linalg.eig`.
+2. ✅ **Eigenvectors (nonsymmetric `eig`)** — built and closed 2026-07-12
+   (commit `62c95d1`, verdicts run 29175738677). `kernels/eigvec`:
+   dtrevc3-shaped back-substitution on T (dlaln2/dladiv guards ported)
+   + one *triangular* matmul back-transform through Z (X is exactly
+   upper triangular in dtrevc3's packing, so faer's blocked triangular
+   multiply does the gemm bulk with no zero-half waste). Generic
+   f64/f32. Replication verdicts vs `np.linalg.eig`: **WIN at all five
+   sizes, ranges separate — 1.80×/2.00×/1.79×/1.55×/1.64× at
+   n=64–1024**; f32 row 2.9–4.4×. Wins at 1024 despite schur_k's 0.99×
+   there: our eigenvector step costs ~300 ms over Schur at 1024 where
+   scipy's dtrevc3+balancing tail costs ~2.7 s. Remaining twin: **c64
+   eig** (ztrevc-shape; simpler — complex T is truly triangular, no
+   2×2 blocks) — recorded as a STATUS gap, next scoped job.
 3. **SVD small-n rotation path** — profile how much of faer's small-n SVD
    (its worst losses: 0.2× @64, 0.4–0.5× @128) sits in the scalar
    `qr_algorithm` rotation application; if large, reuse the rotation
