@@ -18,6 +18,26 @@ if (!wasmPath) {
 	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
 	process.exit(2);
 }
+
+// TEMPORARY (2026-07-12, revert after one run): the workflow token cannot
+// create workflow files, so the crot same-machine A/B rides this script
+// instead — build the pre-crot chqr next to HEAD's build, run the
+// interleaved comparison (bench/ab-crot.mjs), and exit before Pyodide.
+{
+	const { execSync } = await import('node:child_process');
+	const sh = (cmd) => execSync(cmd, { stdio: 'inherit' });
+	sh(`cp ${wasmPath} /tmp/crot.wasm`); // the scalar rebuild overwrites this path
+	// runner checkouts are depth-1; pull in 6c3fb49 and its parent
+	sh('git fetch -q --depth 2 origin 6c3fb4980bab2154c2df53bbbc8f668c50cab758');
+	sh(
+		'git show 6c3fb4980bab2154c2df53bbbc8f668c50cab758^:kernels/src/schur_small_cplx.rs > ../kernels/src/schur_small_cplx.rs',
+	);
+	sh('cargo build --lib --release --target wasm32-unknown-unknown');
+	sh('cp target/wasm32-unknown-unknown/release/bench_harness.wasm /tmp/scalar.wasm');
+	sh('git checkout -- ../kernels/src/schur_small_cplx.rs');
+	sh('node ab-crot.mjs /tmp/crot.wasm /tmp/scalar.wasm crot scalar');
+	process.exit(0);
+}
 const SIZES = [64, 128, 256, 512];
 // [name, faer bench export, faer args (fixed), python lambda body]
 // The *_tuned rows use the docs/wasm.md §7 parameters — the honest current
