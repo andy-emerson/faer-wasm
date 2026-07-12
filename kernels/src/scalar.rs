@@ -38,6 +38,8 @@ pub trait WasmScalar:
 	const SMALL_NUM: Self;
 	/// smallest positive normal (LAPACK `safmin`)
 	const MIN_POS: Self;
+	/// largest finite value (LAPACK overflow threshold)
+	const MAX_POS: Self;
 
 	fn from_f64(x: f64) -> Self;
 	fn abs(self) -> Self;
@@ -59,6 +61,7 @@ impl WasmScalar for f64 {
 	const EPS: Self = f64::EPSILON;
 	const SMALL_NUM: Self = f64::MIN_POSITIVE / f64::EPSILON;
 	const MIN_POS: Self = f64::MIN_POSITIVE;
+	const MAX_POS: Self = f64::MAX;
 
 	#[inline(always)]
 	fn from_f64(x: f64) -> Self {
@@ -130,6 +133,7 @@ impl WasmScalar for f32 {
 	const EPS: Self = f32::EPSILON;
 	const SMALL_NUM: Self = f32::MIN_POSITIVE / f32::EPSILON;
 	const MIN_POS: Self = f32::MIN_POSITIVE;
+	const MAX_POS: Self = f32::MAX;
 
 	#[inline(always)]
 	fn from_f64(x: f64) -> Self {

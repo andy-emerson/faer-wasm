@@ -44,6 +44,9 @@ const OPS = [
 	['qr_r_c64', 'run_qr_c64', null, "np.linalg.qr(ac, mode='r')"],
 	['schur_c64', 'run_schur_c64', null, "sla.schur(ac, output='complex')"],
 	['schur_c64_k', 'run_schur_c64_k', [], "sla.schur(ac, output='complex')"],
+	// eigenvector campaign (2026-07-12): full eig (values + right vectors)
+	['eig', 'run_eig', [], 'np.linalg.eig(a)'],
+	['eig_k', 'run_eig_k', [], 'np.linalg.eig(a)'],
 	// f32 rows (f32/c32 phase): both sides in single precision — numpy
 	// dispatches the LAPACK s-routines, faer rows ride the generic kernels.
 	['matmul_f32', 'run_matmul_f32', [], 'a32 @ b32'],
@@ -51,6 +54,7 @@ const OPS = [
 	['qr_r_f32', 'run_qr_factor_wk_f32', [], "np.linalg.qr(a32, mode='r')"],
 	['eigvals_f32', 'run_eigvals_k3_f32', [], 'np.linalg.eigvals(a32)'],
 	['schur_f32', 'run_schur_k_f32', [], 'sla.schur(a32)'],
+	['eig_f32', 'run_eig_k_f32', [], 'np.linalg.eig(a32)'],
 ];
 
 // ---- faer side (same adaptive min-of-3 protocol as gate.mjs)
@@ -178,6 +182,7 @@ const REP_OPS = [
 	['eigvals_k3', 'run_eigvals_k3', 'np.linalg.eigvals(a)'],
 	['schur_k', 'run_schur_k', 'sla.schur(a)'],
 	['schur_c64_k', 'run_schur_c64_k', "sla.schur(ac, output='complex')"],
+	['eig_k', 'run_eig_k', 'np.linalg.eig(a)'],
 ];
 const stats = (xs) => {
 	const s = [...xs].sort((x, y) => x - y);
