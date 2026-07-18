@@ -84,7 +84,10 @@ re-derivation of the project goals. The decisions, in plain terms:
   were ever tested — they weren't, we raced them, and all three
   assumptions were wrong (swap 1.2–1.3× faster with SIMD, asum
   3.5–4×, iamax 1.4–1.6×, on all three CI machines). The full build
-  list with evidence per row is `docs/blas-layer-plan-2026-07.md`.
+  list with evidence per row is `docs/blas-layer-plan-2026-07.md`,
+  and the layer now has its home: the `blas/` crate — one folder per
+  BLAS level, one file per function, the plan table in its README
+  (scaffold today; implementations land one campaign step at a time).
 - **Threading: decided no** — browsers demand a server configuration
   (COOP/COEP) Andy excludes, and the honest payoff is small for our
   matrix sizes anyway. GPU (for f32) and batch parallelism remain
