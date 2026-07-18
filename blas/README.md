@@ -27,11 +27,22 @@ The rank-1 updates run at 83–100% of ceiling; gemv-class ops at
 symv pass — tuning-campaign material, after the LAPACK re-route shows
 what dominates end-to-end).
 
-Level 3 is scaffold. Gaps: f32 and c64 variants queued behind the f64
-layer; FMA variants per-op-measured as built; transposed trmv/trsv
-not built (no consumer yet); the `cd blas && cargo test` CI gate line
-still needs adding to the workflow (session tokens can't edit
-workflow files).
+**Level 3 is implemented — the f64 layer is complete** (2026-07-18):
+23 functions, 27 tests, 21 cross-target determinism probes (all
+bit-identical native ↔ wasm on the container and every runner draw),
+roofline rows for every operation (`../docs/blas-ab-2026-07.md` steps
+3–5). Level 3 runs at 34–44% of the machine's arithmetic peak — the
+step-1 headroom the tuning campaign chases (micro-tiling, per-op FMA).
+
+Sequencing (Andy, 2026-07-18; ROADMAP "BLAS campaign sequencing"):
+next the other number types (f32, c64), then tuning, then — only
+then — LAPACK work resumes.
+
+Gaps: f32/c64 variants queued; c32 undecided (never shipped anywhere
+in the project); FMA variants per-op-measured as built; transpose
+forms of gemm/trmv/trsv/trmm/trsm not built (no consumer yet); the
+`cd blas && cargo test` CI gate line still needs adding to the
+workflow (session tokens can't edit workflow files).
 
 Hard-won build rule: simd128 is NOT in rustc's default wasm32 feature
 set — every SIMD path must sit under `#[target_feature(enable =

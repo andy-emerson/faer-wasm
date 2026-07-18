@@ -87,6 +87,18 @@ re-derivation of the project goals. The decisions, in plain terms:
   list with evidence per row is `docs/blas-layer-plan-2026-07.md`,
   and the layer has its home: the `blas/` crate — one folder per
   BLAS level, one file per function, the plan table in its README.
+- **The f64 BLAS layer is COMPLETE** (2026-07-18): Level 3's six
+  matrix–matrix functions landed the same way — matrix multiply is
+  literally "matrix × vector, once per column", and so on down; the
+  whole 23-function layer is four loop shapes plus one scalar
+  function. Tested (27 tests), identical bits native/wasm on every
+  check (21 probes), and speed-scored: the matrix–matrix ops run at
+  34–44% of the machine's arithmetic speed limit — matching what the
+  original experiment measured for the simple loop that beat faer, and
+  the headroom the tuning pass will chase. Two CI machines agreed
+  within 1% on every row. Andy's sequencing is now the plan of
+  record: other number types next, then tuning, and no LAPACK work
+  until the BLAS layer is done.
 - **Level 2 is built** (2026-07-18): all seven matrix–vector functions
   (multiply, transpose multiply, rank-1/2 updates, symmetric multiply,
   triangular multiply and solve), each one literally a loop of Level-1
