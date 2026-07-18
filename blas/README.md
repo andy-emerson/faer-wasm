@@ -10,6 +10,39 @@ pointers; implementations are ported from the raced bench variants
 (`bench/src/lib.rs`) one campaign step at a time, each landing with its
 correctness test and benchmark row per the coverage rule.
 
+## Testing contract — two axes, both required to land
+
+**Correctness — `tests/` in this crate** (`cd blas && cargo test
+--release`). Each function is tested to the strongest standard its
+math allows:
+
+- *Elementwise streams* (copy, swap, scal, axpy, rot): **bit-for-bit**
+  against the scalar definition — SIMD lanes don't change the rounding
+  sequence of any individual element, so there is no excuse for any
+  difference. An FMA variant is checked bit-for-bit against the *fused*
+  scalar definition (one rounding instead of two — a different, equally
+  valid reference, documented per variant).
+- *Reduction streams* (dot, nrm2, asum): lane-parallel accumulation
+  legitimately reorders the additions, so bit-for-bit against
+  sequential reference BLAS is mathematically the wrong demand. The
+  standard is agreement with a higher-precision reference within
+  n-scaled floating-point error bounds. `iamax` is the exception that
+  IS exact: the returned index, including BLAS's first-occurrence
+  tie-breaking rule, must match precisely.
+- *Level 2/3*: agreement with a reference implementation within
+  n-scaled error bounds.
+- *Everything*: **native ↔ wasm bit-identical for our own code** — the
+  project's standing determinism guarantee. Cross-target difference is
+  a bug, not noise.
+
+**Performance — `../bench/`** (timing runs in the wasm runtime on the
+reference CI machines, so it lives in the bench harness, not in cargo
+tests). The score is **distance from the machine's measured ceiling**:
+streaming ops against the bandwidth ceiling, multiply-class ops against
+the arithmetic peak — per the re-derived success metric. Method: the
+ceiling probes (`bench/ceilings.mjs`) plus same-machine interleaved
+A/B rows, verdict-stability rule throughout.
+
 ## Implementation taxonomy
 
 The whole layer reduces to **four SIMD streaming-loop shapes plus one
