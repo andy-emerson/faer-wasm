@@ -15,7 +15,7 @@ pub mod syrk;
 pub mod trmm;
 pub mod trsm;
 
-pub use gemm::gemm;
+pub use gemm::{gemm, gemm_col4, gemm_tiled};
 pub use symm::{symm_left, symm_right};
 pub use syr2k::syr2k;
 pub use syrk::syrk;

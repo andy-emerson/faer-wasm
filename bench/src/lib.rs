@@ -1595,6 +1595,42 @@ pub extern "C" fn run_l3_layer(op: usize) -> f64 {
     sym[0] + sym[len(scs) - 1]
 }
 
+/// Tuning-campaign candidate row: the 4×4 register-tiled gemm on the
+/// same state/constants as run_l3_layer(0) — bit-identical output,
+/// raced for speed only.
+#[no_mangle]
+pub extern "C" fn run_l3_tuned_gemm() -> f64 {
+    use faer_wasm_blas::level3 as l3;
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let bcs = s.b.as_ref().col_stride() as usize;
+    let scs = s.sym.as_ref().col_stride() as usize;
+    let len = |cs: usize| if n == 0 { 0 } else { cs * (n - 1) + n };
+    let a = unsafe { core::slice::from_raw_parts(s.a.as_ref().as_ptr(), len(acs)) };
+    let b = unsafe { core::slice::from_raw_parts(s.b.as_ref().as_ptr(), len(bcs)) };
+    let sym = unsafe { core::slice::from_raw_parts_mut(s.sym.as_mut().as_ptr_mut(), len(scs)) };
+    l3::gemm_tiled(0.001, n, n, n, a, acs, b, bcs, 0.5, sym, scs);
+    sym[0] + sym[len(scs) - 1]
+}
+
+/// Same, for the 4-column fused candidate.
+#[no_mangle]
+pub extern "C" fn run_l3_col4_gemm() -> f64 {
+    use faer_wasm_blas::level3 as l3;
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let bcs = s.b.as_ref().col_stride() as usize;
+    let scs = s.sym.as_ref().col_stride() as usize;
+    let len = |cs: usize| if n == 0 { 0 } else { cs * (n - 1) + n };
+    let a = unsafe { core::slice::from_raw_parts(s.a.as_ref().as_ptr(), len(acs)) };
+    let b = unsafe { core::slice::from_raw_parts(s.b.as_ref().as_ptr(), len(bcs)) };
+    let sym = unsafe { core::slice::from_raw_parts_mut(s.sym.as_mut().as_ptr_mut(), len(scs)) };
+    l3::gemm_col4(0.001, n, n, n, a, acs, b, bcs, 0.5, sym, scs);
+    sym[0] + sym[len(scs) - 1]
+}
+
 /// Level-3 cross-target determinism probes: fixed LCG-filled 65×65
 /// matrices (odd — tails everywhere), one op each, folded column-wise
 /// with the layer's own asum. op order matches run_l3_layer plus

@@ -31,3 +31,218 @@ pub fn gemm(
 		gemv(alpha, m, k, a, acs, &b[j * bcs..j * bcs + k], beta, &mut c[j * ccs..j * ccs + m]);
 	}
 }
+
+/// Tuning-campaign candidate (2026-07-18): 4×4 register-tiled gemm.
+/// The column-axpy gemm re-reads and re-writes each C element once per
+/// k step; this micro-kernel holds a 4-row × 4-column tile of C in 8
+/// SIMD registers across the whole k loop — one C load and one C store
+/// per tile, 16 FLOPs per 2 A-register loads. Rounding sequence per
+/// element is IDENTICAL to the column-axpy path (β first, then one
+/// α·b rounding and one multiply-add per k, ascending), so the two are
+/// bit-for-bit interchangeable — tested. Tails (m%4, n%4) fall back to
+/// the gemv path.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_tiled(
+	alpha: f64,
+	m: usize,
+	k: usize,
+	n: usize,
+	a: &[f64],
+	acs: usize,
+	b: &[f64],
+	bcs: usize,
+	beta: f64,
+	c: &mut [f64],
+	ccs: usize,
+) {
+	check_mat(a.len(), m, k, acs);
+	check_mat(b.len(), k, n, bcs);
+	check_mat(c.len(), m, n, ccs);
+	let mut j = 0usize;
+	while j + 4 <= n {
+		let mut i = 0usize;
+		while i + 4 <= m {
+			unsafe {
+				tile_4x4(
+					alpha,
+					k,
+					a.as_ptr().add(i),
+					acs,
+					b.as_ptr().add(j * bcs),
+					bcs,
+					beta,
+					c.as_mut_ptr().add(j * ccs + i),
+					ccs,
+				);
+			}
+			i += 4;
+		}
+		// row tail for these four columns: same per-element sequence as
+		// the gemv path over the remaining rows
+		if i < m {
+			for jj in j..j + 4 {
+				let seg = &mut c[jj * ccs + i..jj * ccs + m];
+				crate::level2::scale_y(beta, seg);
+				for l in 0..k {
+					crate::level1::axpy(
+						alpha * b[jj * bcs + l],
+						&a[l * acs + i..l * acs + m],
+						seg,
+					);
+				}
+			}
+		}
+		j += 4;
+	}
+	// column tail: plain gemv columns
+	while j < n {
+		gemv(alpha, m, k, a, acs, &b[j * bcs..j * bcs + k], beta, &mut c[j * ccs..j * ccs + m]);
+		j += 1;
+	}
+}
+
+/// Tuning-campaign candidate 2 (2026-07-18): 4-column fused gemm.
+/// The 4×4 tile's k-loop walks A at column stride (TLB/prefetch-hostile
+/// at large n — measured losing above n≈512); this shape instead
+/// streams each A column SEQUENTIALLY, once per group of four C
+/// columns — A traffic drops 4× vs column-axpy while the four hot C
+/// columns ride the near caches. Rounding sequence per element is
+/// identical to the column-axpy path — bit-for-bit interchangeable,
+/// tested.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_col4(
+	alpha: f64,
+	m: usize,
+	k: usize,
+	n: usize,
+	a: &[f64],
+	acs: usize,
+	b: &[f64],
+	bcs: usize,
+	beta: f64,
+	c: &mut [f64],
+	ccs: usize,
+) {
+	check_mat(a.len(), m, k, acs);
+	check_mat(b.len(), k, n, bcs);
+	check_mat(c.len(), m, n, ccs);
+	let mut j = 0usize;
+	while j + 4 <= n {
+		{
+			let cp = c.as_mut_ptr();
+			for u in 0..4 {
+				let col =
+					unsafe { core::slice::from_raw_parts_mut(cp.add((j + u) * ccs), m) };
+				crate::level2::scale_y(beta, col);
+			}
+			for l in 0..k {
+				let t = [
+					alpha * b[j * bcs + l],
+					alpha * b[(j + 1) * bcs + l],
+					alpha * b[(j + 2) * bcs + l],
+					alpha * b[(j + 3) * bcs + l],
+				];
+				unsafe {
+					axpy4(
+						a.as_ptr().add(l * acs),
+						t,
+						cp.add(j * ccs),
+						cp.add((j + 1) * ccs),
+						cp.add((j + 2) * ccs),
+						cp.add((j + 3) * ccs),
+						m,
+					);
+				}
+			}
+		}
+		j += 4;
+	}
+	while j < n {
+		gemv(alpha, m, k, a, acs, &b[j * bcs..j * bcs + k], beta, &mut c[j * ccs..j * ccs + m]);
+		j += 1;
+	}
+}
+
+/// One sequential pass over an A column updating four C columns:
+/// cᵤ[i] += a[i]·tᵤ.
+/// # Safety
+/// All five column pointers must be valid for `len` f64s; the C
+/// columns must not alias each other or `a`.
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+#[allow(clippy::too_many_arguments)]
+unsafe fn axpy4(
+	a: *const f64,
+	t: [f64; 4],
+	c0: *mut f64,
+	c1: *mut f64,
+	c2: *mut f64,
+	c3: *mut f64,
+	len: usize,
+) {
+	use crate::lanes::F64x2;
+	let v = [
+		F64x2::splat(t[0]),
+		F64x2::splat(t[1]),
+		F64x2::splat(t[2]),
+		F64x2::splat(t[3]),
+	];
+	let mut i = 0usize;
+	while i + 2 <= len {
+		let av = F64x2::load(a.add(i));
+		F64x2::load(c0.add(i)).add(av.mul(v[0])).store(c0.add(i));
+		F64x2::load(c1.add(i)).add(av.mul(v[1])).store(c1.add(i));
+		F64x2::load(c2.add(i)).add(av.mul(v[2])).store(c2.add(i));
+		F64x2::load(c3.add(i)).add(av.mul(v[3])).store(c3.add(i));
+		i += 2;
+	}
+	while i < len {
+		let av = *a.add(i);
+		*c0.add(i) += av * t[0];
+		*c1.add(i) += av * t[1];
+		*c2.add(i) += av * t[2];
+		*c3.add(i) += av * t[3];
+		i += 1;
+	}
+}
+
+/// One 4×4 tile: rows i..i+4 (two f64x2 registers) × columns j..j+4.
+/// # Safety
+/// `ap` points at A[i, 0] (stride acs, k columns), `bp` at B[0, j]
+/// (stride bcs), `cp` at C[i, j] (stride ccs); 4 rows and 4 B/C
+/// columns must be in bounds.
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+unsafe fn tile_4x4(
+	alpha: f64,
+	k: usize,
+	ap: *const f64,
+	acs: usize,
+	bp: *const f64,
+	bcs: usize,
+	beta: f64,
+	cp: *mut f64,
+	ccs: usize,
+) {
+	use crate::lanes::F64x2;
+	let zero = F64x2::splat(0.0);
+	let vb = F64x2::splat(beta);
+	let mut acc = [[zero; 2]; 4];
+	if beta != 0.0 {
+		for (u, au) in acc.iter_mut().enumerate() {
+			au[0] = F64x2::load(cp.add(u * ccs)).mul(vb);
+			au[1] = F64x2::load(cp.add(u * ccs + 2)).mul(vb);
+		}
+	}
+	for l in 0..k {
+		let a0 = F64x2::load(ap.add(l * acs));
+		let a1 = F64x2::load(ap.add(l * acs + 2));
+		for (u, au) in acc.iter_mut().enumerate() {
+			let t = F64x2::splat(alpha * *bp.add(u * bcs + l));
+			au[0] = au[0].add(a0.mul(t));
+			au[1] = au[1].add(a1.mul(t));
+		}
+	}
+	for (u, au) in acc.iter().enumerate() {
+		au[0].store(cp.add(u * ccs));
+		au[1].store(cp.add(u * ccs + 2));
+	}
+}

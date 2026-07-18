@@ -336,6 +336,41 @@ fn trsm_both_sides_residual() {
 }
 
 #[test]
+fn gemm_tiled_bit_identical_to_gemm() {
+	let mut rng = Lcg(36);
+	// sizes crossing every tile boundary: exact multiples, tails in m,
+	// n, both, and tiny
+	for &(m, k, n) in &[(8usize, 8usize, 8usize), (4, 4, 4), (12, 7, 8), (9, 5, 10), (7, 3, 6), (3, 2, 3), (1, 1, 1), (0, 0, 0), (16, 16, 5), (5, 16, 16)] {
+		let (acs, bcs, ccs) = (m + 1, k + 2, m + 3);
+		let a = rng.mat(m, k, acs);
+		let b = rng.mat(k, n, bcs);
+		let c0 = rng.mat(m, n, ccs);
+		for (alpha, beta) in [(1.0, 0.0), (-0.7, 0.4), (0.3, 1.0)] {
+			let mut c1 = c0.clone();
+			gemm(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c1, ccs);
+			let mut c2 = c0.clone();
+			gemm_tiled(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c2, ccs);
+			let mut c3 = c0.clone();
+			gemm_col4(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c3, ccs);
+			for j in 0..n {
+				for i in 0..m {
+					assert_eq!(
+						c1[j * ccs + i].to_bits(),
+						c2[j * ccs + i].to_bits(),
+						"tiled vs column-axpy {m}x{k}x{n} ({i},{j})"
+					);
+					assert_eq!(
+						c1[j * ccs + i].to_bits(),
+						c3[j * ccs + i].to_bits(),
+						"col4 vs column-axpy {m}x{k}x{n} ({i},{j})"
+					);
+				}
+			}
+		}
+	}
+}
+
+#[test]
 #[should_panic(expected = "storage too short")]
 fn gemm_short_storage_panics() {
 	gemm(1.0, 2, 2, 2, &[1.0; 4], 2, &[1.0; 3], 2, 0.0, &mut [0.0; 4], 2);
