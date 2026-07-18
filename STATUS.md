@@ -87,6 +87,18 @@ re-derivation of the project goals. The decisions, in plain terms:
   list with evidence per row is `docs/blas-layer-plan-2026-07.md`,
   and the layer has its home: the `blas/` crate — one folder per
   BLAS level, one file per function, the plan table in its README.
+- **Level 2 is built** (2026-07-18): all seven matrix–vector functions
+  (multiply, transpose multiply, rank-1/2 updates, symmetric multiply,
+  triangular multiply and solve), each one literally a loop of Level-1
+  calls over matrix columns — the plan's classification became the
+  code structure. Tested to the same standard (exact bit agreement
+  where the math allows, independent cross-checks everywhere, solves
+  verified by multiplying back), identical bits native/wasm on all
+  checks. Speed on the CI machines: the rank-1 updates run at 83–100%
+  of the machine's limit; the multiply-vector family sits near half of
+  it with two known fusion levers recorded for a later tuning pass —
+  we deliberately measure the LAPACK re-route first to see what
+  actually matters end-to-end.
 - **Level 1 is built** (2026-07-18): all ten vector functions, tested
   (12 tests: exact bit-agreement where the math allows, error-bounded
   elsewhere) and speed-scored on the CI machines — the in-place ops

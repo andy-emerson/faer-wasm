@@ -16,10 +16,22 @@ lever: more accumulator registers). Reductions are bit-identical
 native ↔ wasm by construction (`src/lanes.rs` emulates the SIMD lane
 structure elementwise off-wasm — verified 4/4 probes on the container
 and both runner draws). Full record: `../docs/blas-ab-2026-07.md`
-step 3. Levels 2–3 are scaffold. Gaps: f32 and c64 variants queued
-behind the f64 layer; FMA variants per-op-measured as built; the
-`cd blas && cargo test` CI gate line still needs adding to the
-workflow (session tokens can't edit workflow files).
+step 3.
+
+**Level 2 is implemented** the same way (f64, 9 tests, 8/8
+determinism probes bit-identical, runner roofline in the same doc,
+step 4): every function is a loop of Level 1 calls over column slices
+— the classification table below is literally the module structure.
+The rank-1 updates run at 83–100% of ceiling; gemv-class ops at
+~half the read ceiling (recorded levers: 2-column blocking, fused
+symv pass — tuning-campaign material, after the LAPACK re-route shows
+what dominates end-to-end).
+
+Level 3 is scaffold. Gaps: f32 and c64 variants queued behind the f64
+layer; FMA variants per-op-measured as built; transposed trmv/trsv
+not built (no consumer yet); the `cd blas && cargo test` CI gate line
+still needs adding to the workflow (session tokens can't edit
+workflow files).
 
 Hard-won build rule: simd128 is NOT in rustc's default wasm32 feature
 set — every SIMD path must sit under `#[target_feature(enable =
