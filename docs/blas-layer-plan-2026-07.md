@@ -12,6 +12,13 @@ used to rest on assumptions (`swap`, `asum`, `iamax`) were raced on
 2026-07-18 and all three assumptions lost — those rows are now "yes"
 (see the Level-1 assumption race in `docs/blas-ab-2026-07.md`).
 
+`copy` (Andy, 2026-07-18): implemented as a SIMD streaming loop for
+consistency and completeness. The measurement stands — copy runs at
+the bandwidth ceiling and the loop cannot be *faster* than memcpy —
+but the race also showed the loop is never slower, so the layer keeps
+one uniform implementation family rather than one special case. No
+speed claim attaches to this choice.
+
 Per-operation FMA variant choice (from the step-1 three-way race):
 fused for `trmm`/`trsm`/`gemv`, plain for `gemm`/`syrk`; the remaining
 ops get their variant measured as they are built. Banded/packed forms
@@ -30,7 +37,7 @@ demand.
 | `asum` | sum of absolute values (ℓ¹ norm) | yes | |
 | `iamax` | index of the largest element | yes | |
 | `nrm2` | Euclidean length (ℓ² norm) | yes | |
-| `copy` | vector copy | no | measured: raced to a dead heat with memcpy, which already runs at the machine's bandwidth ceiling |
+| `copy` | vector copy | yes | |
 | `rotg` | generate a plane rotation | no | structural: no arrays — guarded scalar arithmetic on two numbers |
 
 ## Level 2
@@ -62,7 +69,9 @@ demand.
 - `swap` / `asum` / `iamax`: the Level-1 assumption race, three runner
   draws (1.15–1.33× / 3.5–4× / 1.4–1.6× SIMD wins) — same doc, step 2.
 - `copy`: raced in the original A/B on four machines (never separated)
-  and clocked at the measured bandwidth ceiling in the step-1 probes.
+  and clocked at the measured bandwidth ceiling in the step-1 probes;
+  the "yes" is an architect consistency decision on top of a measured
+  no-harm, not a speed claim.
 - FMA per-op verdicts: step-1 three-way race, three runner draws.
 
 Verdict-stability rule applies throughout: only same-machine
