@@ -1,7 +1,38 @@
-//! `swap` — exchange two vectors.
+//! `swap` — exchange two vectors: x ↔ y.
 //!
-//! Implementation: elementwise stream.
+//! Implementation: elementwise stream (2 lanes, 2× unrolled). Ported
+//! from the raced variant — SIMD beat the auto-vectorized plain loop
+//! 1.15–1.33× on all three runner draws (docs/blas-ab-2026-07.md,
+//! step 2).
 //!
-//! STATUS: not yet built — scaffold only. Ported from the raced bench
-//! variant during the build campaign; lands with its correctness test
-//! and benchmark row (coverage rule). Evidence: docs/blas-ab-2026-07.md.
+//! Rounding contract: none — bytes move unchanged, bit-for-bit.
+
+use crate::lanes::F64x2;
+
+/// x ↔ y. Panics on length mismatch.
+pub fn swap(x: &mut [f64], y: &mut [f64]) {
+	assert_eq!(x.len(), y.len(), "swap: length mismatch");
+	let len = x.len();
+	let xp = x.as_mut_ptr();
+	let yp = y.as_mut_ptr();
+	let mut i = 0usize;
+	unsafe {
+		while i + 4 <= len {
+			let x0 = F64x2::load(xp.add(i));
+			let y0 = F64x2::load(yp.add(i));
+			let x1 = F64x2::load(xp.add(i + 2));
+			let y1 = F64x2::load(yp.add(i + 2));
+			y0.store(xp.add(i));
+			x0.store(yp.add(i));
+			y1.store(xp.add(i + 2));
+			x1.store(yp.add(i + 2));
+			i += 4;
+		}
+		while i < len {
+			let t = *xp.add(i);
+			*xp.add(i) = *yp.add(i);
+			*yp.add(i) = t;
+			i += 1;
+		}
+	}
+}

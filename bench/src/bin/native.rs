@@ -23,6 +23,14 @@ fn time_op(f: impl Fn() -> f64, n: usize) -> f64 {
 
 fn main() {
     let label = std::env::args().nth(1).unwrap_or_else(|| "native-o3".into());
+    // `native l1-bits` prints the L1 determinism probes as hex bit
+    // patterns; l1-roofline.mjs compares the wasm build against them.
+    if label == "l1-bits" {
+        for op in 0..4usize {
+            println!("{:016x}", bench_harness::run_l1_probe(op).to_bits());
+        }
+        return;
+    }
     let ops: &[(&str, usize, extern "C" fn() -> f64)] = &[
         ("matmul", 256, bench_harness::run_matmul),
         ("lu_solve", 256, bench_harness::run_lu_solve),

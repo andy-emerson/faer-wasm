@@ -11,6 +11,11 @@ publish = false
 # ../docs/blas-ab-2026-07.md. The LAPACK-layer kernels re-route onto
 # this crate as it fills in.
 
+[dependencies]
+# no_std sqrt (f64::sqrt is std-only); correctly-rounded IEEE, so
+# bit-identical across targets. Same choice as ../kernels.
+libm = { version = "0.2", default-features = false }
+
 [profile.release]
 opt-level = 3
 lto = true

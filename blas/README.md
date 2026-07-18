@@ -5,10 +5,15 @@ The wasm-native BLAS layer, built as its own finished product per the
 bulk work onto this crate as it fills in. One file per function, one
 folder per level; this README is the plan of record for the layer.
 
-**Status: scaffold.** Files carry their classification and evidence
-pointers; implementations are ported from the raced bench variants
-(`bench/src/lib.rs`) one campaign step at a time, each landing with its
-correctness test and benchmark row per the coverage rule.
+**Status: Level 1 implemented** (f64, unit stride — callers pass
+contiguous column slices; strided access defeats streaming and no
+consumer wants it). All ten functions shipped with correctness tests
+(`tests/level1.rs`, 12 tests) and roofline rows
+(`../bench/l1-roofline.mjs`); reductions are bit-identical native ↔
+wasm by construction (`src/lanes.rs` emulates the SIMD lane structure
+elementwise off-wasm — verified by the scripted probe comparison).
+Levels 2–3 are scaffold. Gaps: f32 and c64 variants queued behind the
+f64 layer; FMA variants per-op-measured as built.
 
 ## Testing contract — two axes, both required to land
 

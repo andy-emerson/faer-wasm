@@ -1365,6 +1365,118 @@ pub extern "C" fn run_l1_ab(op: usize, variant: usize) -> f64 {
     }
 }
 
+// ---- the shipped BLAS layer (blas/ crate), Level 1: roofline rows +
+// cross-target determinism probes. run_l1_layer streams every column of
+// the n×n state through the layer's function; the script scores GB/s
+// against the same-run bandwidth ceiling. Mutating ops run in place on
+// the persistent state (no per-call allocation — the allocator-tax
+// lesson); the chosen constants keep values bounded across iterations
+// (scal by -1, rot by an orthogonal pair, axpy with small alpha).
+fn state_mut() -> &'static mut State {
+    unsafe { (*STATE.0.get()).as_mut().expect("call setup(n) first") }
+}
+
+#[no_mangle]
+pub extern "C" fn run_l1_layer(op: usize) -> f64 {
+    use faer_wasm_blas::level1 as l1;
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let bcs = s.b.as_ref().col_stride() as usize;
+    let ap = s.a.as_mut().as_ptr_mut();
+    let bp = s.b.as_mut().as_ptr_mut();
+    let col = |p: *mut f64, cs: usize, j: usize| unsafe {
+        core::slice::from_raw_parts_mut(p.add(j * cs), n)
+    };
+    let mut sink = 0.0f64;
+    match op {
+        0 => {
+            for j in 0..n {
+                l1::copy(col(ap, acs, j), col(bp, bcs, j));
+            }
+            sink += unsafe { *bp };
+        }
+        1 => {
+            for j in 0..n {
+                l1::swap(col(ap, acs, j), col(bp, bcs, j));
+            }
+            sink += unsafe { *ap };
+        }
+        2 => {
+            for j in 0..n {
+                l1::scal(-1.0, col(ap, acs, j));
+            }
+            sink += unsafe { *ap };
+        }
+        3 => {
+            for j in 0..n {
+                l1::axpy(0.001, col(ap, acs, j), col(bp, bcs, j));
+            }
+            sink += unsafe { *bp };
+        }
+        4 => {
+            for j in 0..n {
+                l1::rot(col(ap, acs, j), col(bp, bcs, j), 0.8, 0.6);
+            }
+            sink += unsafe { *ap };
+        }
+        5 => {
+            for j in 0..n {
+                sink += l1::dot(col(ap, acs, j), col(bp, bcs, j));
+            }
+        }
+        6 => {
+            for j in 0..n {
+                sink += l1::nrm2(col(ap, acs, j));
+            }
+        }
+        7 => {
+            for j in 0..n {
+                sink += l1::asum(col(ap, acs, j));
+            }
+        }
+        8 => {
+            for j in 0..n {
+                sink += l1::iamax(col(ap, acs, j)) as f64;
+            }
+        }
+        _ => return f64::NAN,
+    }
+    sink
+}
+
+/// Cross-target determinism probe: fixed LCG data (len 1001 — odd, so the
+/// scalar tail runs too), one reduction per op. Native bin and wasm build
+/// must return identical bits (the lane-emulation construction in
+/// blas/src/lanes.rs). op: 0 dot, 1 asum, 2 nrm2, 3 iamax.
+#[no_mangle]
+pub extern "C" fn run_l1_probe(op: usize) -> f64 {
+    use faer_wasm_blas::level1 as l1;
+    const LEN: usize = 1001;
+    let mut x = [0.0f64; LEN];
+    let mut y = [0.0f64; LEN];
+    let mut s = 42u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    for v in x.iter_mut() {
+        *v = next();
+    }
+    for v in y.iter_mut() {
+        *v = next();
+    }
+    match op {
+        0 => l1::dot(&x, &y),
+        1 => l1::asum(&x),
+        2 => l1::nrm2(&x),
+        3 => l1::iamax(&x) as f64,
+        _ => f64::NAN,
+    }
+}
+
 unsafe fn l1_swap_plain(x: *mut f64, y: *mut f64, len: usize) {
     for i in 0..len {
         let t = *x.add(i);
