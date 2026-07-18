@@ -5,7 +5,7 @@ what do we ship, and how good is it?** Updated at the end of every
 working session. Details and evidence live in `docs/` and the README
 evidence grid; this page is the summary you can hold in your head.
 
-Last updated: 2026-07-12.
+Last updated: 2026-07-18.
 
 ## 1. What we changed in faer itself
 
@@ -62,7 +62,31 @@ Nothing of ours exists. faer's built-in c32 works but is untested and
 unmeasured by us. Building c32 versions of our kernels is a known,
 scoped job — queued behind the packaging decision.
 
-## 3. Known gaps and next levers (for the architect to pick from)
+## 3. The direction reset (2026-07-18) — read this first
+
+Andy's benchmark experiment overturned a founding assumption: faer's
+matrix multiply — the engine every kernel routes its heavy work to —
+is actually **slower than a simple streaming loop** on the reference
+machines (by 10–30% up to n=512; about even at 1024). That triggered a
+re-derivation of the project goals. The decisions, in plain terms:
+
+- **New yardstick**: success is now "how close to the machine's
+  physical speed limits are we," not "how much faster than scipy are
+  we." scipy stays on the scoreboard for marketing only.
+- **New plan**: build our own complete BLAS layer first (the simple
+  fast loops, properly named, tested, and benchmarked), then make our
+  LAPACK-layer functions use it. First step: check whether the FMA
+  build (a faster multiply instruction faer uses and our loops don't
+  yet) changes the verdict.
+- **Threading: decided no** — browsers demand a server configuration
+  (COOP/COEP) Andy excludes, and the honest payoff is small for our
+  matrix sizes anyway. GPU (for f32) and batch parallelism remain
+  future options.
+- **Long-term**: faer-wasm is heading toward standing on its own.
+  faer's remaining functions get replaced one measured campaign at a
+  time — never on principle, only on evidence.
+
+## 4. Known gaps and next levers (for the architect to pick from)
 
 - **Schur near parity at larger sizes** — Schur rows with margins under
   ~1.3× flip between win and loss depending on which machine CI hands

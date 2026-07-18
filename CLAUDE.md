@@ -34,6 +34,18 @@ published research, measurement wins — the record already shows all
 three happening (LU recursion disabled, faer routing overridden, the
 SVD `recursion_threshold` recommendation refuted by sweep).
 
+**End state and success metric (Andy, 2026-07-18; full record in
+ROADMAP "Re-derived goals").** The end state is a self-contained,
+wasm-native library — faer is scaffolding, retired one measured
+campaign at a time, never removed as a motive in itself. **Success is
+distance from the machine's ceiling** (streaming ops vs measured
+memory bandwidth, multiply-class ops vs measured peak arithmetic);
+beating scipy is the market comparison, not the goal. Structure:
+the BLAS layer is being built first as its own finished product, the
+LAPACK-layer kernels re-route onto it. No shared-memory threading
+(COOP/COEP excluded by the architect); WebGPU-f32 and consumer-layer
+batch Workers stay on the board.
+
 Start by reading `README.md`, then `ROADMAP.md` (the phased plan — the
 architect picks which phase to work; see the contract below), then
 `docs/research-faer-wasm-2026-07.md` (the
@@ -56,6 +68,12 @@ may propose. (3) Agree the plan, then execute.
 **Deviation routing.** Discoveries mid-milestone: unrelated → record in
 ROADMAP and move on; blocking the milestone (or a small measurable win on
 its path) → handle now; architectural → stop and ask the architect.
+
+**Race the foundation (Andy session, 2026-07-18).** Measurement-
+before-rewrite has a blind spot: candidates get raced against
+incumbents, but incumbents never get raced against a null hypothesis
+(faer's gemm lost 15–20% for two weeks as the presumed floor). Carried
+dependencies are raced periodically like everything else.
 
 **Claim grading.** Every claim in README/docs carries evidence graded on
 two independent axes: **strength** (stated < built < observed < tested <

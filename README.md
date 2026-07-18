@@ -25,6 +25,17 @@ Hessenberg: replaced). The result is a growing wasm-shaped layer
 (`kernels/`, `schur/`) over faer's foundation that may end up different
 from both ancestors, and that's the point.
 
+**Re-derived end state (2026-07-18 architect session; wording drafted
+by the engineer, pending Andy's sign-off).** The destination is a
+self-contained, wasm-native library: LAPACK's coverage and accuracy,
+every algorithm and routing chosen by measurement on the target, and
+**success measured as distance from the machine's ceiling** — memory
+bandwidth for streaming work, peak arithmetic for multiply-class work —
+with scipy kept only as the market comparison. faer is scaffolding,
+retired one measured campaign at a time (the BLAS layer is being
+rebuilt first; the LAPACK-layer kernels then stand on it). Full record:
+ROADMAP "Re-derived goals".
+
 ## Contents
 
 - `STATUS.md` — **start here**: the one-page plain-English scoreboard —
@@ -153,6 +164,7 @@ their evidence.
 | c64 eig (ctrevc kernel, dlaln2-guarded complex solves + triangular back-transform): correct — residuals ~1e-10·n at n=1–512 incl. complex-multishift route, defective path finite | tested | CI-enforced | `kernels/tests/eigvec_cplx.rs`, per gate run |
 | eig_c64_k vs np.linalg.eig(ac): WIN at ALL five sizes, ranges separate — 3.24×/2.78×/2.61×/2.18×/2.11× at n=64–1024, the widest replicated margins in the project | observed | scripted | replication gate, run 29177564170 |
 | verdict-stability rule: rows with <~1.3× margin flip WIN/LOSS with the CI machine drawn (c64 Schur@256: 0.89×/0.89×/1.21× across three machines; schur_k@512: 1.10×/0.95×); margins ≥1.4× replicate on every machine | observed | cross-checked | replication gates, runs 29157035070 + 29175738677 + 29177564170 |
+| BLAS-layer A/B: flat SIMD streaming loops beat faer's blocked Level 3 by 1.1–1.45× through n=512 on all three reference-machine draws (gemm 1.07–1.33×); n=1024 machine-dependent; L1/L2 parity (bandwidth-bound). R ≤ 1 in the shipping regime, FMA confound open | observed | scripted | `bench/blas-ab.mjs`, runs 29631062796/29631536777/29631542527 + dev-container run; docs/blas-ab-2026-07.md |
 | post-allocator-fix scoreboard (the new reference): real schur_k WINS 1.24×/1.67×/1.08×/1.10× at n=64–512 (0.99× at 1024), eigvals_k3 WINS at all five sizes incl. 512/1024 (1.52×/1.51×) — pre-fix 512/1024 losses and the eigvals 512-parity were leak-allocator tax on our side (scipy unaffected; its times moved <5% between runs while ours dropped 1.6–1.8×) | observed | scripted | runs 29146566266 (pre) vs 29157035070 (post), same protocol |
 | faer's c64 matmul allocates per-call temporaries via GlobalAlloc (one n=600 c64 multishift: 15.4 GB cumulative, ~25K allocations, peak live ~19 MB) — fatal on leak-only bump allocators; LIFO-rewind shim fixes it (probe values bit-identical) | tested | CI-enforced | `kernels/tests/alloc_probe.rs` peak-live guard + wasm gate on the new shims |
 
