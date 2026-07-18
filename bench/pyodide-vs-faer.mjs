@@ -18,18 +18,6 @@ if (!wasmPath) {
 	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
 	process.exit(2);
 }
-
-// TEMPORARY (revert after draws): route to the L1 roofline + determinism
-// check instead of the pyodide head-to-head.
-{
-	const { execSync } = await import('node:child_process');
-	execSync('cargo run --release --bin native l1-bits > /tmp/native-l1-bits.txt', {
-		stdio: ['ignore', 'ignore', 'inherit'],
-		shell: '/bin/bash',
-	});
-	execSync(`node l1-roofline.mjs ${wasmPath} /tmp/native-l1-bits.txt`, { stdio: 'inherit' });
-	process.exit(0);
-}
 const SIZES = [64, 128, 256, 512];
 // [name, faer bench export, faer args (fixed), python lambda body]
 // The *_tuned rows use the docs/wasm.md §7 parameters — the honest current
