@@ -18,13 +18,6 @@ if (!wasmPath) {
 	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
 	process.exit(2);
 }
-
-// TEMPORARY (2026-07-18, revert after draws): route to the L1 assumption race.
-{
-	const { execSync } = await import('node:child_process');
-	execSync(`node l1-ab.mjs ${wasmPath}`, { stdio: 'inherit' });
-	process.exit(0);
-}
 const SIZES = [64, 128, 256, 512];
 // [name, faer bench export, faer args (fixed), python lambda body]
 // The *_tuned rows use the docs/wasm.md §7 parameters — the honest current
