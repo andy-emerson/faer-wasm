@@ -30,15 +30,16 @@ APIs), not inside it.
 ## BLAS campaign sequencing (Andy, 2026-07-18)
 
 "Finish f64 layer, then the other layers, then tuning, no more lapack
-until blas is done." Binding order for the BLAS campaign:
-1. **f64 Level 3** completes the f64 layer (L1/L2 landed 2026-07-18);
-2. **the other number types** — the layer cloned into f32 and c64
-   (c32: decide when reached — nothing in the project has ever
-   shipped c32);
-3. **tuning** — the recorded levers (2-column gemv blocking, fused
-   symv, reduction accumulators, iamax fused pass, per-op FMA
-   variants) get their measurements only after the layer is complete
-   in all types;
+until blas is done." Revised same day (Andy: "Maybe we should tune and
+benchmark f64 before we implement the other types?" — yes: the type
+clones inherit tuned shapes for free instead of re-tuning ×3):
+1. **f64 Level 3** completes the f64 layer — DONE 2026-07-18;
+2. **tune + benchmark f64**: the recorded levers (micro-tiling gemm,
+   2-column gemv blocking, fused symv, reduction accumulators, iamax
+   fused pass, per-op FMA variants), each a same-machine A/B with
+   runner draws, winners only; re-run the faer race after;
+3. **the other number types** — the tuned layer cloned into f32 and
+   c64 (c32: decide when reached — nothing has ever shipped c32);
 4. **only then** does any LAPACK-layer work resume (the kernel
    re-route onto the layer included).
 
