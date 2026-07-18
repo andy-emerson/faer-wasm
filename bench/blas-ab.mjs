@@ -3,14 +3,17 @@
 // machine per the verdict-stability rule. Verdicts require min..max range
 // separation; ratio > 1 means the streaming loop is FASTER than faer.
 //
-//   node blas-ab.mjs <bench-wasm>
+//   node blas-ab.mjs <bench-wasm> [--fma]
+// --fma: also time variant 2 (the fused-FMA streaming loop) — meaningful
+// only on a build compiled with -C target-feature=+simd128,+relaxed-simd.
 import { readFileSync } from 'node:fs';
 
 const wasmPath = process.argv[2];
 if (!wasmPath) {
-	console.error('usage: node blas-ab.mjs <bench-wasm>');
+	console.error('usage: node blas-ab.mjs <bench-wasm> [--fma]');
 	process.exit(2);
 }
+const THREE_WAY = process.argv.includes('--fma');
 const bytes = readFileSync(wasmPath);
 
 const OPS = [
@@ -46,23 +49,41 @@ const stats = (xs) => {
 	return { med: s[Math.floor(s.length / 2)], lo: s[0], hi: s[s.length - 1] };
 };
 
-console.log('| op | level | n | faer med ms | loop med ms | loop/faer | verdict |');
-console.log('| - | - | -: | -: | -: | -: | - |');
+// which ops have a fused variant 2 (gemv + the four L3 ops)
+const HAS_FMA = new Set([1, 4, 5, 6, 7]);
+
+if (!THREE_WAY) {
+	console.log('| op | level | n | faer med ms | loop med ms | loop/faer | verdict |');
+	console.log('| - | - | -: | -: | -: | -: | - |');
+} else {
+	console.log('| op | level | n | faer | loop | loopFMA | loop/faer | fma/faer | fma/loop |');
+	console.log('| - | - | -: | -: | -: | -: | -: | -: | -: |');
+}
 for (const [op, name, level] of OPS) {
 	for (const n of SIZES) {
 		const tf = [];
 		const tl = [];
+		const tm = [];
+		const doFma = THREE_WAY && HAS_FMA.has(op);
 		for (let r = 0; r < ROUNDS; r++) {
 			tf.push(await timeOnce(op, 0, n));
 			tl.push(await timeOnce(op, 1, n));
+			if (doFma) tm.push(await timeOnce(op, 2, n));
 		}
 		const f = stats(tf);
 		const l = stats(tl);
-		const sep = f.hi < l.lo || l.hi < f.lo;
-		const ratio = f.med / l.med;
-		const verdict = !sep ? 'OVERLAP' : ratio > 1 ? 'loop WINS' : 'faer WINS';
-		console.log(
-			`| ${name} | ${level} | ${n} | ${f.med.toFixed(3)} | ${l.med.toFixed(3)} | ${ratio.toFixed(2)}× | ${verdict} |`,
-		);
+		if (!THREE_WAY) {
+			const sep = f.hi < l.lo || l.hi < f.lo;
+			const ratio = f.med / l.med;
+			const verdict = !sep ? 'OVERLAP' : ratio > 1 ? 'loop WINS' : 'faer WINS';
+			console.log(
+				`| ${name} | ${level} | ${n} | ${f.med.toFixed(3)} | ${l.med.toFixed(3)} | ${ratio.toFixed(2)}× | ${verdict} |`,
+			);
+		} else {
+			const m = doFma ? stats(tm) : null;
+			console.log(
+				`| ${name} | ${level} | ${n} | ${f.med.toFixed(3)} | ${l.med.toFixed(3)} | ${m ? m.med.toFixed(3) : '—'} | ${(f.med / l.med).toFixed(2)}× | ${m ? (f.med / m.med).toFixed(2) + '×' : '—'} | ${m ? (l.med / m.med).toFixed(2) + '×' : '—'} |`,
+			);
+		}
 	}
 }

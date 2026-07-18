@@ -991,6 +991,47 @@ pub extern "C" fn run_qr_factor_wk() -> f64 {
 //   0 copy   1 gemv   2 ger    3 trsv (upper, 1 rhs)
 //   4 gemm   5 syrk (lower C=A·Aᵀ)   6 trmm (C=U·B)   7 trsm (U·X=B)
 // variant: 0 = faer path, 1 = streaming loops. Returns a probe double.
+// Fused (FMA) twins for the streaming loops, compiled only when the build
+// enables relaxed-simd: `dst[i] += alpha * src[i]` in one rounding via
+// `f64x2_relaxed_madd`. Variant 2 of run_blas_ab uses these; in a plain
+// build variant 2 falls back to the plain loop (race it only on the FMA
+// build). Ceiling probes at the bottom follow the same pattern.
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+#[target_feature(enable = "simd128", enable = "relaxed-simd")]
+unsafe fn axpy_fma(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
+    use core::arch::wasm32::*;
+    let va = f64x2_splat(alpha);
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let d0 = v128_load(dst.add(i) as *const v128);
+        let s0 = v128_load(src.add(i) as *const v128);
+        let d1 = v128_load(dst.add(i + 2) as *const v128);
+        let s1 = v128_load(src.add(i + 2) as *const v128);
+        v128_store(dst.add(i) as *mut v128, f64x2_relaxed_madd(va, s0, d0));
+        v128_store(dst.add(i + 2) as *mut v128, f64x2_relaxed_madd(va, s1, d1));
+        i += 4;
+    }
+    while i < len {
+        *dst.add(i) += *src.add(i) * alpha;
+        i += 1;
+    }
+}
+
+/// `dst += alpha·src` — fused when the build has relaxed-simd, otherwise the
+/// plain kernel primitive (note the sign: kernels' axpy is dst -= src·alpha).
+#[inline(always)]
+unsafe fn axpy_acc(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+    {
+        axpy_fma(dst, src, alpha, len);
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "relaxed-simd")))]
+    {
+        use faer_wasm_kernels::scalar::WasmScalar;
+        f64::axpy(dst, src, -alpha, len);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn run_blas_ab(op: usize, variant: usize) -> f64 {
     use faer::linalg::matmul::matmul;
@@ -1066,6 +1107,15 @@ pub extern "C" fn run_blas_ab(op: usize, variant: usize) -> f64 {
             }
             c[(0, 0)] + c[(n - 1, n - 1)]
         }
+        (1, 2) => {
+            let mut y = alloc::vec![0.0f64; n];
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                unsafe { axpy_acc(y.as_mut_ptr(), ap.add(j * acs), s.rhs[(j, 0)], n) };
+            }
+            y[0] + y[n - 1]
+        }
         // ---- trsv: U·x = b, one right-hand side
         (3, 0) => {
             let mut x = s.rhs.to_owned();
@@ -1104,6 +1154,19 @@ pub extern "C" fn run_blas_ab(op: usize, variant: usize) -> f64 {
             }
             c[(0, 0)] + c[(n - 1, n - 1)]
         }
+        (4, 2) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    unsafe { axpy_acc(cp.add(j * ccs), ap.add(l * acs), s.b[(l, j)], n) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
         // ---- syrk: C (lower) <- A·Aᵀ
         (5, 0) => {
             let mut c = Mat::<f64>::zeros(n, n);
@@ -1132,6 +1195,19 @@ pub extern "C" fn run_blas_ab(op: usize, variant: usize) -> f64 {
                     unsafe {
                         f64::axpy(cp.add(j + j * ccs), ap.add(j + l * acs), -s.a[(j, l)], n - j)
                     };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (5, 2) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    unsafe { axpy_acc(cp.add(j + j * ccs), ap.add(j + l * acs), s.a[(j, l)], n - j) };
                 }
             }
             c[(0, 0)] + c[(n - 1, n - 1)]
@@ -1166,6 +1242,19 @@ pub extern "C" fn run_blas_ab(op: usize, variant: usize) -> f64 {
             }
             c[(0, 0)] + c[(n - 1, n - 1)]
         }
+        (6, 2) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    unsafe { axpy_acc(cp.add(j * ccs), up.add(l * ucs), s.b[(l, j)], l + 1) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
         // ---- trsm: U·X = B, n right-hand sides
         (7, 0) => {
             let mut x = s.b.to_owned();
@@ -1189,8 +1278,92 @@ pub extern "C" fn run_blas_ab(op: usize, variant: usize) -> f64 {
             }
             x[(0, 0)] + x[(n - 1, n - 1)]
         }
+        (7, 2) => {
+            let mut x = s.b.to_owned();
+            let xcs = x.as_ref().col_stride() as usize;
+            let xp = x.as_mut().as_ptr_mut();
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for k in 0..n {
+                let col = unsafe { xp.add(k * xcs) };
+                for j in (0..n).rev() {
+                    unsafe {
+                        *col.add(j) /= u[(j, j)];
+                        axpy_acc(col, up.add(j * ucs), -*col.add(j), j);
+                    }
+                }
+            }
+            x[(0, 0)] + x[(n - 1, n - 1)]
+        }
         _ => f64::NAN,
     }
+}
+
+// ---- ceiling probes (roofline metric, adopted 2026-07-18): the two
+// machine limits every benchmark row is scored against.
+
+/// Memory-bandwidth probe: triad c = a + 2.5·b over the n×n state
+/// matrices. Bytes moved per call = 3·8·n² (read a, read b, write c).
+#[no_mangle]
+pub extern "C" fn run_ceiling_bw() -> f64 {
+    use faer_wasm_kernels::scalar::WasmScalar;
+    let s = state();
+    let n = s.a.nrows();
+    let mut c = s.b.to_owned(); // c starts as b
+    let ccs = c.as_ref().col_stride() as usize;
+    let cp = c.as_mut().as_ptr_mut();
+    let ap = s.a.as_ref().as_ptr();
+    let acs = s.a.col_stride() as usize;
+    for j in 0..n {
+        unsafe {
+            f64::scale(cp.add(j * ccs), 2.5, n);
+            f64::axpy(cp.add(j * ccs), ap.add(j * acs), -1.0, n);
+        }
+    }
+    c[(0, 0)] + c[(n - 1, n - 1)]
+}
+
+/// Peak-arithmetic probe: register-resident mul+add chains, 8 independent
+/// v128 accumulators × `iters` rounds. FLOPs per call = iters · 8 · 2 lanes
+/// · 2 ops. Fused (one relaxed_madd = still 2 FLOPs) when the build has
+/// relaxed-simd — so this probe measures the ceiling OF THE BUILD.
+#[no_mangle]
+pub extern "C" fn run_ceiling_flops(iters: usize) -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        ceiling_flops_imp(iters)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = iters;
+        f64::NAN
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[target_feature(enable = "simd128")]
+unsafe fn ceiling_flops_imp(iters: usize) -> f64 {
+    use core::arch::wasm32::*;
+    let m = f64x2_splat(1.000000001);
+    let a = f64x2_splat(1e-9);
+    let mut acc = [f64x2_splat(1.0); 8];
+    for _ in 0..iters {
+        for k in 0..8 {
+            #[cfg(target_feature = "relaxed-simd")]
+            {
+                acc[k] = f64x2_relaxed_madd(acc[k], m, a);
+            }
+            #[cfg(not(target_feature = "relaxed-simd"))]
+            {
+                acc[k] = f64x2_add(f64x2_mul(acc[k], m), a);
+            }
+        }
+    }
+    let mut s = 0.0;
+    for k in 0..8 {
+        s += f64x2_extract_lane::<0>(acc[k]) + f64x2_extract_lane::<1>(acc[k]);
+    }
+    s
 }
 
 
