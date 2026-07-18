@@ -8,12 +8,23 @@ folder per level; this README is the plan of record for the layer.
 **Status: Level 1 implemented** (f64, unit stride — callers pass
 contiguous column slices; strided access defeats streaming and no
 consumer wants it). All ten functions shipped with correctness tests
-(`tests/level1.rs`, 12 tests) and roofline rows
-(`../bench/l1-roofline.mjs`); reductions are bit-identical native ↔
-wasm by construction (`src/lanes.rs` emulates the SIMD lane structure
-elementwise off-wasm — verified by the scripted probe comparison).
-Levels 2–3 are scaffold. Gaps: f32 and c64 variants queued behind the
-f64 layer; FMA variants per-op-measured as built.
+(`tests/level1.rs`, 12 tests) and runner-measured roofline rows
+(`../bench/l1-roofline.mjs`): the read-modify-write streams run at
+81–100% of the machine's fastest same-run stream, copy/dot at the
+read-path (triad) ceiling, reductions at 60–80% of triad (recorded
+lever: more accumulator registers). Reductions are bit-identical
+native ↔ wasm by construction (`src/lanes.rs` emulates the SIMD lane
+structure elementwise off-wasm — verified 4/4 probes on the container
+and both runner draws). Full record: `../docs/blas-ab-2026-07.md`
+step 3. Levels 2–3 are scaffold. Gaps: f32 and c64 variants queued
+behind the f64 layer; FMA variants per-op-measured as built; the
+`cd blas && cargo test` CI gate line still needs adding to the
+workflow (session tokens can't edit workflow files).
+
+Hard-won build rule: simd128 is NOT in rustc's default wasm32 feature
+set — every SIMD path must sit under `#[target_feature(enable =
+"simd128")]` on the whole call chain (see `src/lanes.rs`), or the
+intrinsics compile as out-of-line calls (measured 6.4× slowdown).
 
 ## Testing contract — two axes, both required to land
 
