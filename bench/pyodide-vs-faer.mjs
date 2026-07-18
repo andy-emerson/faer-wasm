@@ -18,16 +18,6 @@ if (!wasmPath) {
 	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
 	process.exit(2);
 }
-
-// TEMPORARY (2026-07-13, revert after one run): route this dispatch to the
-// BLAS-layer A/B on the runner — the reference machine for the R question.
-// The workflow token cannot create workflow files, so the A/B rides the
-// existing pyodide-bench dispatch; exits before Pyodide loads.
-{
-	const { execSync } = await import('node:child_process');
-	execSync(`node blas-ab.mjs ${wasmPath}`, { stdio: 'inherit' });
-	process.exit(0);
-}
 const SIZES = [64, 128, 256, 512];
 // [name, faer bench export, faer args (fixed), python lambda body]
 // The *_tuned rows use the docs/wasm.md §7 parameters — the honest current
