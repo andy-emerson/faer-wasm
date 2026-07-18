@@ -981,6 +981,219 @@ pub extern "C" fn run_qr_factor_wk() -> f64 {
     f[(0, 0)] + f[(n - 1, n - 1)] + tau[n / 2]
 }
 
+// ---- BLAS-layer A/B (architect-directed, 2026-07-13): for every
+// "unchanged" BLAS-level operation, a streaming-loop variant built on our
+// SIMD primitives, timed interleaved against the faer path on one machine
+// (bench/blas-ab.mjs). Tests the standing policy that shaping only pays
+// where an op is hot AND arithmetic-bound: prediction is parity for the
+// bandwidth-bound Level-1/2 rows and a faer win of ~R for the Level-3
+// rows (the gemm row IS the R measurement). op codes:
+//   0 copy   1 gemv   2 ger    3 trsv (upper, 1 rhs)
+//   4 gemm   5 syrk (lower C=A·Aᵀ)   6 trmm (C=U·B)   7 trsm (U·X=B)
+// variant: 0 = faer path, 1 = streaming loops. Returns a probe double.
+#[no_mangle]
+pub extern "C" fn run_blas_ab(op: usize, variant: usize) -> f64 {
+    use faer::linalg::matmul::matmul;
+    use faer::linalg::matmul::triangular::{self, BlockStructure};
+    use faer::linalg::triangular_solve;
+    use faer::Accum;
+    use faer_wasm_kernels::scalar::WasmScalar;
+    let s = state();
+    let n = s.a.nrows();
+    // an upper-triangular, well-conditioned U for the triangular ops
+    let mut u = s.a.to_owned();
+    for j in 0..n {
+        for i in j + 1..n {
+            u[(i, j)] = 0.0;
+        }
+        u[(j, j)] += 4.0; // diagonal dominance keeps the solves tame
+    }
+    match (op, variant) {
+        // ---- copy: C <- B
+        (0, 0) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            c.copy_from(s.b.as_ref());
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (0, 1) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let bp = s.b.as_ref().as_ptr();
+            let bcs = s.b.col_stride() as usize;
+            for j in 0..n {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bp.add(j * bcs), cp.add(j * ccs), n);
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- gemv: y <- A·x
+        (1, 0) => {
+            let mut y = Mat::<f64>::zeros(n, 1);
+            matmul(y.as_mut(), Accum::Replace, s.a.as_ref(), s.rhs.as_ref(), 1.0, Par::Seq);
+            y[(0, 0)] + y[(n - 1, 0)]
+        }
+        (1, 1) => {
+            let mut y = alloc::vec![0.0f64; n];
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                unsafe { f64::axpy(y.as_mut_ptr(), ap.add(j * acs), -s.rhs[(j, 0)], n) };
+            }
+            y[0] + y[n - 1]
+        }
+        // ---- ger: A <- A + x·yᵀ  (y = x here; rank-1 update)
+        (2, 0) => {
+            let mut c = s.b.to_owned();
+            matmul(
+                c.as_mut(),
+                Accum::Add,
+                s.rhs.as_ref(),
+                s.rhs.transpose(),
+                1.0,
+                Par::Seq,
+            );
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (2, 1) => {
+            let mut c = s.b.to_owned();
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let xp = s.rhs.as_ref().as_ptr();
+            for j in 0..n {
+                unsafe { f64::axpy(cp.add(j * ccs), xp, -s.rhs[(j, 0)], n) };
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- trsv: U·x = b, one right-hand side
+        (3, 0) => {
+            let mut x = s.rhs.to_owned();
+            triangular_solve::solve_upper_triangular_in_place(u.as_ref(), x.as_mut(), Par::Seq);
+            x[(0, 0)] + x[(n - 1, 0)]
+        }
+        (3, 1) => {
+            let mut x = alloc::vec![0.0f64; n];
+            for i in 0..n {
+                x[i] = s.rhs[(i, 0)];
+            }
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for j in (0..n).rev() {
+                x[j] /= u[(j, j)];
+                unsafe { f64::axpy(x.as_mut_ptr(), up.add(j * ucs), x[j], j) };
+            }
+            x[0] + x[n - 1]
+        }
+        // ---- gemm: C <- A·B
+        (4, 0) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            matmul(c.as_mut(), Accum::Replace, s.a.as_ref(), s.b.as_ref(), 1.0, Par::Seq);
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (4, 1) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    unsafe { f64::axpy(cp.add(j * ccs), ap.add(l * acs), -s.b[(l, j)], n) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- syrk: C (lower) <- A·Aᵀ
+        (5, 0) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            triangular::matmul(
+                c.as_mut(),
+                BlockStructure::TriangularLower,
+                Accum::Replace,
+                s.a.as_ref(),
+                BlockStructure::Rectangular,
+                s.a.transpose(),
+                BlockStructure::Rectangular,
+                1.0,
+                Par::Seq,
+            );
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (5, 1) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    // rows j.. of column j only (lower half)
+                    unsafe {
+                        f64::axpy(cp.add(j + j * ccs), ap.add(j + l * acs), -s.a[(j, l)], n - j)
+                    };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- trmm: C <- U·B
+        (6, 0) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            triangular::matmul(
+                c.as_mut(),
+                BlockStructure::Rectangular,
+                Accum::Replace,
+                u.as_ref(),
+                BlockStructure::TriangularUpper,
+                s.b.as_ref(),
+                BlockStructure::Rectangular,
+                1.0,
+                Par::Seq,
+            );
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (6, 1) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    // U's column l has rows 0..=l
+                    unsafe { f64::axpy(cp.add(j * ccs), up.add(l * ucs), -s.b[(l, j)], l + 1) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- trsm: U·X = B, n right-hand sides
+        (7, 0) => {
+            let mut x = s.b.to_owned();
+            triangular_solve::solve_upper_triangular_in_place(u.as_ref(), x.as_mut(), Par::Seq);
+            x[(0, 0)] + x[(n - 1, n - 1)]
+        }
+        (7, 1) => {
+            let mut x = s.b.to_owned();
+            let xcs = x.as_ref().col_stride() as usize;
+            let xp = x.as_mut().as_ptr_mut();
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for k in 0..n {
+                let col = unsafe { xp.add(k * xcs) };
+                for j in (0..n).rev() {
+                    unsafe {
+                        *col.add(j) /= u[(j, j)];
+                        f64::axpy(col, up.add(j * ucs), *col.add(j), j);
+                    }
+                }
+            }
+            x[(0, 0)] + x[(n - 1, n - 1)]
+        }
+        _ => f64::NAN,
+    }
+}
+
+
 #[cfg(target_arch = "wasm32")]
 mod wasm_shim {
     use core::alloc::{GlobalAlloc, Layout};
