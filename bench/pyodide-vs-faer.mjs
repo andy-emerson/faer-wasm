@@ -18,6 +18,41 @@ if (!wasmPath) {
 	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
 	process.exit(2);
 }
+// TEMPORARY: route this run to the f32 roofline scoreboards + the f32
+// gemm dispatch race (f32 layer runner confirmation; revert after draws)
+{
+	const { execSync } = await import('node:child_process');
+	const run = (cmd) => execSync(cmd, { stdio: 'inherit' });
+	run('cargo run --release --bin native l1-bits-f32 > /tmp/nb1.txt');
+	run('cargo run --release --bin native l2-bits-f32 > /tmp/nb2.txt');
+	run('cargo run --release --bin native l3-bits-f32 > /tmp/nb3.txt');
+	run(`node l1-roofline.mjs ${wasmPath} /tmp/nb1.txt --f32`);
+	run(`node l2-roofline.mjs ${wasmPath} /tmp/nb2.txt --f32`);
+	run(`node l3-roofline.mjs ${wasmPath} /tmp/nb3.txt --f32`);
+	// dispatch race either side of the 0.75 MB threshold
+	const { instance } = await WebAssembly.instantiate(readFileSync(wasmPath), {});
+	const e2 = instance.exports;
+	console.log('## f32 gemm dispatch race (tiled vs col4, ms)');
+	for (const n of [256, 384, 512, 768, 1024]) {
+		e2.setup(n);
+		const time = (f) => {
+			let s = f();
+			let best = Infinity;
+			for (let r = 0; r < 3; r++) {
+				const t0 = performance.now();
+				s += f();
+				best = Math.min(best, performance.now() - t0);
+			}
+			if (!Number.isFinite(s)) throw new Error('nf');
+			return best;
+		};
+		const tiled = time(() => e2.run_l3_tuned_gemm_f32());
+		const col4 = time(() => e2.run_l3_col4_gemm_f32());
+		console.log(`n=${n}: tiled ${tiled.toFixed(2)} col4 ${col4.toFixed(2)} -> ${tiled < col4 ? 'tiled' : 'col4'}`);
+	}
+	process.exit(0);
+}
+
 const SIZES = [64, 128, 256, 512];
 // [name, faer bench export, faer args (fixed), python lambda body]
 // The *_tuned rows use the docs/wasm.md §7 parameters — the honest current
