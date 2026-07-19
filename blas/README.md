@@ -192,6 +192,7 @@ of `axpy` describes `daxpy`, the f32 cell `saxpy`.
 | BLAS | mathematical name | f64 | f32 | c64 | c32 |
 |---|---|---|---|---|---|
 | `gemv` | matrix × vector | CA+FI | CA+FI | — | — |
+| `gemv_t` | transposed-matrix × vector (Aᵀx, transpose never formed) | CA | CA | — | — |
 | `ger` | outer-product update (rank-1) | CA | CA | — | — |
 | `symv` | symmetric matrix × vector | FS | FS | — | — |
 | `trmv` | triangular matrix × vector | CA+FI | CA+FI | — | — |
