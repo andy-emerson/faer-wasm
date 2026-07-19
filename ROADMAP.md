@@ -43,11 +43,16 @@ clones inherit tuned shapes for free instead of re-tuning ×3):
    via shared fan-out/fan-in kernels (`blas/src/kernels.rs`) — RUNNER
    CONFIRMED both draws: gemv 29–31 GB/s (was ~17), L3 family 48–56%
    of peak (was 34–44%) (runs 29669397117/29669395117, docs step 7).
-   Remaining levers: fused symv (landed, container-measured ~5% — the
-   4-column grouped variant in test now; symm_left rides on it);
-   iamax fused pass; trmv/trsv fan-in blocking (recorded,
-   unmeasured); per-op FMA variants (relaxed-simd build); then re-run
-   the faer race and the rooflines to close;
+   Fused 4-column symv + blocked trmv/trsv — RUNNER CONFIRMED both
+   draws (runs 29670218479/29670215776): symv ~2×, symm_left ~1.8×
+   (84–86% of peak, best L3 row on the board), trmv/trsv ~1.3×. The
+   fused-iamax candidate was raced and REFUTED on the same draws
+   (reverted; negative result recorded in the module docs).
+   Remaining: per-op FMA variants (relaxed-simd build — NOTE: wasm
+   relaxed-madd rounding is implementation-dependent, so shipping it
+   trades away the cross-target bit-identity guarantee; architect
+   call needed on default-vs-variant before building); then the
+   closing faer race + roofline re-run;
 3. **the other number types** — the tuned layer cloned into f32 and
    c64 (c32: decide when reached — nothing has ever shipped c32);
 4. **only then** does any LAPACK-layer work resume (the kernel

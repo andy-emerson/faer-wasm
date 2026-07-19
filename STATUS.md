@@ -104,15 +104,26 @@ re-derivation of the project goals. The decisions, in plain terms:
   the machine's arithmetic limit). Results stay bit-for-bit identical
   to the plain loops everywhere the math allows — locked by tests —
   with the two unavoidable reorderings documented and tested to their
-  own fixed order. Rounds 2–3 are now CI-machine confirmed on two
-  draws: the dot product runs at the machine's memory read limit,
+  own fixed order. Rounds 2–3 are CI-machine confirmed on two draws:
+  the dot product runs at the machine's memory read limit,
   matrix×vector at 1.75× its old speed, and the matrix–matrix family
   at 48–56% of the arithmetic limit (was 34–44%). A bonus finding:
   transpose-matrix×vector got 1.3–1.7× faster without being touched —
   it's built as a loop of dot products, so the dot improvement flowed
   through, which is exactly why the layer is structured as
-  compositions. Remaining levers: a fused symmetric-multiply pass (in
-  test), and the faster-multiply-instruction (FMA) build variants.
+  compositions. Round 4 (also two-draw confirmed): the symmetric
+  multiply-vector now fuses both triangles' work into one pass over
+  four columns at a time — 2× faster, and the symmetric
+  matrix–matrix multiply that is built on it reached **84–86% of the
+  machine's arithmetic limit**, the best matrix–matrix row on the
+  board. One candidate lost its race: a single-pass version of
+  find-largest-element measured slower than the shipped two-pass
+  shape on both CI machines and was reverted — the loss is recorded
+  so it isn't re-tried blind. Remaining lever: the
+  faster-multiply-instruction (FMA) build — held for an architect
+  decision, because wasm's relaxed FMA rounds differently on
+  different hardware, which would trade away our identical-results-
+  everywhere guarantee if shipped as the default.
   matrix–matrix functions landed the same way — matrix multiply is
   literally "matrix × vector, once per column", and so on down; the
   whole 23-function layer is four loop shapes plus one scalar

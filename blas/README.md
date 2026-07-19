@@ -158,10 +158,10 @@ demand. Evidence per row: `../docs/blas-ab-2026-07.md`.
 |---|---|---|
 | `gemv` | matrix × vector | column-axpy, 4-column fan-in |
 | `ger` | outer-product update (rank-1) | column-axpy |
-| `symv` | symmetric matrix × vector | column-axpy |
-| `trmv` | triangular matrix × vector | column-axpy |
+| `symv` | symmetric matrix × vector | fused stream, 4-column grouped |
+| `trmv` | triangular matrix × vector | column-axpy, 4-column fan-in |
 | `syr` / `syr2` | symmetric rank-1/2 updates | column-axpy |
-| `trsv` | triangular solve, one vector | divide-then-column-axpy |
+| `trsv` | triangular solve, one vector | divide-then-column-axpy, 4-column fan-in |
 
 ## Level 3 — `src/level3/`
 

@@ -78,20 +78,6 @@ mod imp {
 		pub unsafe fn lane1(self) -> f64 {
 			f64x2_extract_lane::<1>(self.0)
 		}
-		#[inline]
-		#[target_feature(enable = "simd128")]
-		pub unsafe fn pair(a: f64, b: f64) -> Self {
-			Self(f64x2(a, b))
-		}
-		/// Branch-free argmax step, per lane: if `a > m` take `(a, ai)`,
-		/// else keep `(m, mi)`. Strict `>` keeps the first occurrence
-		/// within each lane track; NaN never replaces.
-		#[inline]
-		#[target_feature(enable = "simd128")]
-		pub unsafe fn argmax_step(m: Self, mi: Self, a: Self, ai: Self) -> (Self, Self) {
-			let gt = f64x2_gt(a.0, m.0);
-			(Self(v128_bitselect(a.0, m.0, gt)), Self(v128_bitselect(ai.0, mi.0, gt)))
-		}
 	}
 }
 
@@ -158,26 +144,6 @@ mod imp {
 		#[inline(always)]
 		pub unsafe fn lane1(self) -> f64 {
 			self.0[1]
-		}
-		#[inline(always)]
-		pub unsafe fn pair(a: f64, b: f64) -> Self {
-			Self([a, b])
-		}
-		// wasm side is f64x2_gt + v128_bitselect — lane-wise strict `>`
-		// blend, emulated with exactly that predicate.
-		#[inline(always)]
-		pub unsafe fn argmax_step(m: Self, mi: Self, a: Self, ai: Self) -> (Self, Self) {
-			#[inline(always)]
-			fn step(m: f64, mi: f64, a: f64, ai: f64) -> (f64, f64) {
-				if a > m {
-					(a, ai)
-				} else {
-					(m, mi)
-				}
-			}
-			let (v0, i0) = step(m.0[0], mi.0[0], a.0[0], ai.0[0]);
-			let (v1, i1) = step(m.0[1], mi.0[1], a.0[1], ai.0[1]);
-			(Self([v0, v1]), Self([i0, i1]))
 		}
 	}
 }
