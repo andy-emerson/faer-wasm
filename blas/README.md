@@ -9,9 +9,9 @@ the plan of record for the layer. Counting convention, used
 everywhere: **23 routines** per real type (netlib names = files; flag
 variants folded, so gemv covers N/T and symm/trmm/trsm cover both
 sides) which split into **27 distinct operations** (the call-graph
-nodes). The complex layer counts differently because reference BLAS
-itself splits there: **26 routines / 31 operations** for c64 (dot →
-zdotu/zdotc, ger → zgeru/zgerc, scal gains the real-α zdscal, gemv
+nodes). The complex layers count differently because reference BLAS
+itself splits there: **26 routines / 31 operations** each for c64 and
+c32 (dot → dotu/dotc, ger → geru/gerc, scal gains a real-α form, gemv
 adds the conjugate-transpose form, and the symmetric family becomes
 Hermitian). Companion maps: `src/README.md` (who calls whom),
 `bench/README.md` (the measured benchmarks), `tests/README.md` (the
@@ -85,20 +85,36 @@ ships the single-column fused pass (19–21%), and hemm_left rides it
 (39–41%) — the 4-column fused grouping that pushed dsymv to 2× is
 the obvious first c64 tuning candidate.
 
-Sequencing (Andy, 2026-07-18, revised same day; ROADMAP "BLAS
-campaign sequencing"): f64 tuned first — DONE; the tuned layer is
-being cloned into the other number types (f32 — DONE; c64 — BUILT,
-tuning levers recorded), then — only then — LAPACK work resumes.
-c32 remains an open architect decision.
+**The c32 layer is built** (2026-07-19, Andy: "C32") — the c64 layer
+cloned into single precision with one real lane-geometry change: TWO
+complexes per F32x4 register, so the product form works pair-wise
+(`swap_pairs`/`dup_even`/`dup_odd`/`neg_even`/`neg_odd`) and odd
+lengths leave a one-complex scalar tail — bit-identical by the same
+sign-folding proof. 26 routines / 31 operations over `C32`
+(`src/c32.rs`); six delegations to the tuned s-streams; 40 new tests
+(144 crate-wide, all green); 24 determinism probes bit-identical
+native ↔ wasm on the container and both runner draws. Runner
+rooflines (2 draws): the L3 family at **75–87% of the f32 arithmetic
+peak** — cgemm's 85% of ~30.5 GFLOP/s (≈26 GFLOP/s) is the fastest
+absolute row on the whole board — with the same recorded lever
+(chemv's un-grouped fused pass at 12%, hemm_left riding it at
+55–56%) and icamax inheriting isamax's rescan weakness (13–16%).
 
-Gaps: c32 undecided (never shipped anywhere in the project); FMA
-variants deferred (above); transpose forms of gemm/trmv/trsv/trmm/
-trsm not built (no consumer yet, any type); c64 tuning levers
-recorded but not raced (register-tile zgemm, 4-column fused zhemv);
-the complex-symmetric zsymm/zsyrk/zsyr2k and the complex-s rotation
-`zrot` not built (no consumer); the `cd blas && cargo test` CI gate
-line still needs adding to the workflow (session tokens can't edit
-workflow files).
+Sequencing (Andy, 2026-07-18, revised same day; ROADMAP "BLAS
+campaign sequencing"): f64 tuned first — DONE; the tuned layer
+cloned into the other number types — f32, c64, c32 all DONE
+2026-07-19. **The four-type grid is complete**; per the sequencing,
+LAPACK-layer work (the kernel re-route onto this crate) is now
+unblocked.
+
+Gaps: FMA variants deferred (above); transpose forms of
+gemm/trmv/trsv/trmm/trsm not built (no consumer yet, any type);
+complex tuning levers recorded but not raced (register-tile
+zgemm/cgemm, 4-column fused zhemv/chemv, the i*amax rescans); the
+complex-symmetric symm/syrk/syr2k forms and the complex-s rotation
+apply (`zrot`) not built (no consumer); the `cd blas && cargo test`
+CI gate line still needs adding to the workflow (session tokens
+can't edit workflow files).
 
 Hard-won build rule: simd128 is NOT in rustc's default wasm32 feature
 set — every SIMD path must sit under `#[target_feature(enable =
@@ -184,20 +200,21 @@ columns at a time without changing any of them — the shared kernels in
   f64, 8×4 in f32 — same register count at each lane width);
   `CA+RT/FO` means size-dispatched between the tile and fan-out at
   the measured crossover.
-- **→d** — *delegation*: the z-routine is a one-line call onto the
-  tuned d-routine over the interleaved 2n-real view (`src/c64.rs`) —
-  a real scale/copy/swap/rotation/reduction of complex data IS the
-  real operation on twice the elements, so speed, guards, and
-  determinism are inherited rather than duplicated.
-- **—** — not built for that type (c32 undecided — nothing has ever
-  shipped c32). The fan-out/fan-in
-kernels preserve the per-element rounding sequence, so tuned ops stay
-bit-for-bit against their plain column-axpy replays (the two
-triangular right-side cases whose elimination order forbids that
-document their reorder and the tests mirror it; symv's fused pass
-legitimately re-folds its reduction and is bounds-tested). The tables
-give each op's shorthand per number type — matching f64/f32 cells are
-the clone doing its job.
+- **→d** / **→s** — *delegation*: the complex routine is a one-line
+  call onto the tuned same-precision real routine over the
+  interleaved 2n-real view (`src/c64.rs` / `src/c32.rs`) — a real
+  scale/copy/swap/rotation/reduction of complex data IS the real
+  operation on twice the elements, so speed, guards, and determinism
+  are inherited rather than duplicated.
+
+The fan-out/fan-in kernels preserve the per-element rounding
+sequence, so tuned ops stay bit-for-bit against their plain
+column-axpy replays (the two triangular right-side cases whose
+elimination order forbids that document their reorder and the tests
+mirror it; symv's fused pass legitimately re-folds its reduction and
+is bounds-tested). The tables give each op's shorthand per number
+type — matching cells across type columns are the clones doing their
+job.
 
 The step-1 three-way race measured fused-FMA better for
 `trmm`/`trsm`/`gemv` and harmful for `syrk` — those variants are
@@ -217,65 +234,67 @@ syr2k → `zher2k`), per the counting note above.
 
 | BLAS | mathematical name | f64 | f32 | c64 | c32 |
 |---|---|---|---|---|---|
-| `axpy` | scaled vector addition (y ← αx + y) | ES | ES | ES | — |
-| `scal` | scalar × vector | ES | ES | ES ² | — |
-| `copy` | vector copy | ES | ES | →d | — |
-| `swap` | exchange two vectors | ES | ES | →d | — |
-| `rot` | apply a plane rotation | ES | ES | →d ³ | — |
-| `dot` | dot product | RS | RS | RS ⁴ | — |
-| `nrm2` | Euclidean length (ℓ² norm) | RS | RS | →d | — |
-| `asum` | sum of absolute values (ℓ¹ norm) | RS | RS | →d ⁵ | — |
-| `iamax` | index of the largest element | RS | RS | RS ⁶ | — |
-| `rotg` | generate a plane rotation | G | G | G | — |
+| `axpy` | scaled vector addition (y ← αx + y) | ES | ES | ES | ES |
+| `scal` | scalar × vector | ES | ES | ES ² | ES ² |
+| `copy` | vector copy | ES | ES | →d | →s |
+| `swap` | exchange two vectors | ES | ES | →d | →s |
+| `rot` | apply a plane rotation | ES | ES | →d ³ | →s ³ |
+| `dot` | dot product | RS | RS | RS ⁴ | RS ⁴ |
+| `nrm2` | Euclidean length (ℓ² norm) | RS | RS | →d | →s |
+| `asum` | sum of absolute values (ℓ¹ norm) | RS | RS | →d ⁵ | →s ⁵ |
+| `iamax` | index of the largest element | RS | RS | RS ⁶ | RS ⁶ |
+| `rotg` | generate a plane rotation | G | G | G | G |
 
-² `zscal` (complex α); the real-α form `zdscal` is →d.
-³ `zdrot` — the real-c,s rotation; a real rotation acts on re/im
-independently, so it IS `drot` on the 2n-real view. The complex-s
-`zrot` has no consumer yet (gap).
-⁴ splits into `zdotu` (xᵀy) and `zdotc` (xᴴy) — different results,
+² `zscal`/`cscal` (complex α); the real-α forms `zdscal`/`csscal`
+are delegations.
+³ `zdrot`/`csrot` — the real-c,s rotation; a real rotation acts on
+re/im independently, so it IS `drot`/`srot` on the 2n-real view. The
+complex-s apply (`zrot`) has no consumer yet (gap).
+⁴ splits into `dotu` (xᵀy) and `dotc` (xᴴy) — different results,
 both 4-accumulator reduction streams.
-⁵ reference semantics Σ(|re|+|im|) — component magnitudes ARE `dasum`
-of the 2n-real view.
-⁶ `izamax` maximizes |re|+|im| per element — own lane pass (abs +
-swap-add), idamax's two-pass shape.
+⁵ reference semantics Σ(|re|+|im|) — component magnitudes ARE
+`dasum`/`sasum` of the 2n-real view.
+⁶ `izamax`/`icamax` maximize |re|+|im| per element — own lane pass
+(abs + swap-add), idamax's two-pass shape.
 
 ## Level 2 — `src/L2/`
 
 | BLAS | mathematical name | f64 | f32 | c64 | c32 |
 |---|---|---|---|---|---|
-| `gemv` | matrix × vector | CA+FI | CA+FI | CA+FI | — |
-| `gemv_t` | transposed-matrix × vector (Aᵀx, transpose never formed) | RS per column | RS per column | RS per column ⁷ | — |
-| `ger` | outer-product update (rank-1) | CA | CA | CA ⁸ | — |
-| `symv` | symmetric matrix × vector | FS | FS | FS ⁹ | — |
-| `trmv` | triangular matrix × vector | CA+FI | CA+FI | CA+FI | — |
-| `syr` / `syr2` | symmetric rank-1/2 updates | CA | CA | CA | — |
-| `trsv` | triangular solve, one vector | DCA+FI | DCA+FI | DCA+FI ¹⁰ | — |
+| `gemv` | matrix × vector | CA+FI | CA+FI | CA+FI | CA+FI |
+| `gemv_t` | transposed-matrix × vector (Aᵀx, transpose never formed) | RS per column | RS per column | RS per column ⁷ | RS per column ⁷ |
+| `ger` | outer-product update (rank-1) | CA | CA | CA ⁸ | CA ⁸ |
+| `symv` | symmetric matrix × vector | FS | FS | FS ⁹ | FS ⁹ |
+| `trmv` | triangular matrix × vector | CA+FI | CA+FI | CA+FI | CA+FI |
+| `syr` / `syr2` | symmetric rank-1/2 updates | CA | CA | CA | CA |
+| `trsv` | triangular solve, one vector | DCA+FI | DCA+FI | DCA+FI ¹⁰ | DCA+FI ¹⁰ |
 
-⁷ two forms: `zgemv_t` (Aᵀx, `zdotu` per column) and `zgemv_c` (Aᴴx,
-`zdotc` per column) — the conjugate transpose is the one complex
-algorithms actually consume.
-⁸ splits into `zgeru` (αxyᵀ) and `zgerc` (αxyᴴ) — the conjugation
+⁷ two forms: `_t` (Aᵀx, `dotu` per column) and `_c` (Aᴴx, `dotc`
+per column) — the conjugate transpose is the one complex algorithms
+actually consume.
+⁸ splits into `geru` (αxyᵀ) and `gerc` (αxyᴴ) — the conjugation
 lands on the per-column scalar, never on a stream.
-⁹ `zhemv`'s fused pass is single-column (`zaxpy_dotc`); the 4-column
-grouping that pushed dsymv to 2× is a recorded c64 tuning lever.
-¹⁰ complex division by Smith's algorithm (`C64`'s guarded `/` — the
-`dladiv` shape).
+⁹ the Hermitian `hemv` fused pass is single-column
+(`zaxpy_dotc`/`caxpy_dotc`); the 4-column grouping that pushed dsymv
+to 2× is a recorded complex tuning lever.
+¹⁰ complex division by Smith's algorithm (`C64`/`C32`'s guarded `/`
+— the `dladiv` shape).
 
 ## Level 3 — `src/L3/`
 
 | BLAS | mathematical name | f64 | f32 | c64 | c32 |
 |---|---|---|---|---|---|
-| `gemm` | matrix multiplication | CA+RT/FO | CA+RT/FO | CA+FO ¹¹ | — |
-| `syrk` | Gram-matrix update (αAAᵀ + βC) | CA+FO | CA+FO | CA+FO ¹² | — |
-| `trmm` | triangular matrix multiplication | CA+FO | CA+FO | CA+FO | — |
-| `symm` / `syr2k` | symmetric multiply / rank-2k update | CA+FO ¹ | CA+FO ¹ | CA+FO ¹ | — |
-| `trsm` | triangular solve, many right-hand sides | DCA+FO | DCA+FO | DCA+FO | — |
+| `gemm` | matrix multiplication | CA+RT/FO | CA+RT/FO | CA+FO ¹¹ | CA+FO ¹¹ |
+| `syrk` | Gram-matrix update (αAAᵀ + βC) | CA+FO | CA+FO | CA+FO ¹² | CA+FO ¹² |
+| `trmm` | triangular matrix multiplication | CA+FO | CA+FO | CA+FO | CA+FO |
+| `symm` / `syr2k` | symmetric multiply / rank-2k update | CA+FO ¹ | CA+FO ¹ | CA+FO ¹ | CA+FO ¹ |
+| `trsm` | triangular solve, many right-hand sides | DCA+FO | DCA+FO | DCA+FO | DCA+FO |
 
 ¹ left-side symm/hemm is FS per column of B.
-¹¹ no register tile for c64 yet — a complex tile is a different
-register geometry (one complex per register), a recorded tuning
-lever, not a mechanical port; `zgemm` routes everything through the
-col4 fan-out with `zgemm_colaxpy` kept as the bit-checked reference.
-¹² `zherk`/`zher2k` take real α (herk) / real β per the reference
-signatures, and maintain the Hermitian invariant: stored diagonals
-end exactly real.
+¹¹ no register tile for the complex types yet — a complex tile is a
+different register geometry, a recorded tuning lever, not a
+mechanical port; `zgemm`/`cgemm` route everything through the col4
+fan-out with the `_colaxpy` reference kept bit-checked.
+¹² the Hermitian `herk`/`her2k` take real α (herk) / real β per the
+reference signatures, and maintain the Hermitian invariant: stored
+diagonals end exactly real.

@@ -23,9 +23,9 @@ evidence log: docs/blas-ab-2026-07.md steps 1–6. Scoreboard: STATUS §3.
    blas/bench (own wasm, builds in seconds): execSync
    `cd ../blas/bench && cargo build --release --target
    wasm32-unknown-unknown --lib`, then per level `cargo run --release
-   --bin native lN-bits[-f32|-z] > /tmp/bits` and `node
+   --bin native lN-bits[-f32|-z|-c] > /tmp/bits` and `node
    lN-roofline.mjs target/.../blas_bench.wasm /tmp/bits
-   [--f32|--c64]` (cwd blas/bench), then `process.exit(0)`. Commit as
+   [--f32|--c64|--c32]` (cwd blas/bench), then `process.exit(0)`. Commit as
    "TEMPORARY: ... (revert after draws)". NOTE: the implementation
    being measured must ALSO be committed/pushed before dispatch —
    the runner clones the branch head.
@@ -79,6 +79,10 @@ evidence log: docs/blas-ab-2026-07.md steps 1–6. Scoreboard: STATUS §3.
   trsm_l,trmm_r,trsm_r), probes run_l{1,2,3}_probe_z (5/10/9, native
   modes l{1,2,3}-bits-z); c64 L3 scores against the F64 flops
   ceiling with 4x FLOP accounting (complex MAC = 8 real FLOPs).
+  c32 twins mirror all of it with _c suffixes over state
+  ac/bc/symc/tric/rhsc (the c64 fills cast to f32); c32 L3 scores
+  against the F32 flops ceiling (complex f32 MAC = 8 real f32
+  FLOPs); roofline flag --c32.
 - Scripts: blas/bench/l{1,2,3}-roofline.mjs (L1/L2 GB/s vs fastest
   same-run stream at n=2048; L3 GFLOP/s vs arithmetic peak at n=512;
   --f32 switches type) over the blas-bench wasm. bench/gemm-tune-ab.mjs

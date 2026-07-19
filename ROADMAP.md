@@ -77,10 +77,21 @@ clones inherit tuned shapes for free instead of re-tuning ×3):
    ceiling and hemm_left (riding it) 39–41% — the 4-column fused
    grouping is the obvious first candidate; a complex register-tile
    zgemm is a design, not a port. Not built (no consumer): complex-
-   symmetric zsymm/zsyrk/zsyr2k, complex-s rotation zrot, c32
-   (architect decision when reached);
+   symmetric zsymm/zsyrk/zsyr2k, complex-s rotation zrot.
+   c32: DONE 2026-07-19 (Andy: "C32"), two runner draws — the c64
+   layer at a new lane geometry (TWO complexes per F32x4 register,
+   pair-wise shuffles, one-complex scalar tails, all bit-identical
+   by the same sign-folding proof); 26 routines / 31 operations, 40
+   new tests (144 crate-wide), 24 probes bit-identical on container
+   + both draws; L3 at 75–87% of the f32 arithmetic peak — cgemm 85%
+   of ~30.5 GFLOP/s, the fastest absolute row on the board; same
+   recorded levers (chemv fused grouping — 12% without it; icamax
+   rescan 13–16%). THE FOUR-TYPE GRID IS COMPLETE;
 4. **only then** does any LAPACK-layer work resume (the kernel
-   re-route onto the layer included).
+   re-route onto the layer included) — UNBLOCKED as of 2026-07-19:
+   all four number types are built, tested, probed, and
+   runner-scored; what remains inside the BLAS layer is recorded
+   tuning levers and consumer-driven gaps, not coverage.
 
 ## Re-derived goals (architect session, 2026-07-18)
 

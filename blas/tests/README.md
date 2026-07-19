@@ -4,16 +4,17 @@ One test file per BLAS routine, mirroring `../src/` (naming:
 `../src/L1/README.md`); `main.rs` per level folder is the Cargo test
 target, `common.rs` holds the shared generator and the
 higher-precision reference summers. Run with
-`cd blas && cargo test --release` — **104 tests, all green**.
+`cd blas && cargo test --release` — **144 tests, all green**.
 Benchmarks live in `../bench/README.md`; this page is the
 correctness half of the contract.
 
 ## What each routine is tested to
 
 The standard is the strongest the routine's math allows (the full
-contract rationale is in the crate README). Both types are tested
-identically; the f32 bounds use an f64-accumulated reference
-(products formed in f32, as the implementation forms them).
+contract rationale is in the crate README). All four types are tested
+identically; the f32 and c32 bounds use f64-accumulated references
+(products formed in the working precision, as the implementation
+forms them).
 
 | routine(s) | standard |
 |---|---|
@@ -39,16 +40,18 @@ identically; the f32 bounds use an f64-accumulated reference
 | zhemm | left: bounds (rides zhemv); right: **bit-for-bit replay** through the conjugating triangle lookup |
 | zherk, zher2k | **bit-for-bit replay** incl. the real-β component scale and the exactly-real diagonals |
 | ztrmm, ztrsm | **bit-for-bit replay** both sides — same reorder disclosures as the real twins, replays mirror them; residuals for ztrsm |
+| the c-routines (c32) | the z-suite cloned one-for-one at the two-complexes-per-register lane geometry: same replays bit-for-bit, bounds vs f64-accumulated references, crotg identities in f32 at 1e±15/±30 extremes, the same conjugation cross-checks and Hermitian-diagonal invariants |
 
 ## Cross-target bit-identity — the results
 
 The standing guarantee: our code produces **identical bits on native
 x86-64 and wasm**, by construction (`../src/lanes.rs` emulates the
 SIMD lane structure elementwise off-wasm, and every reduction folds
-its lanes in a fixed order). It is verified by 66 determinism probes
-(21 f64 + 21 f32 + 24 c64) — fixed-LCG inputs at odd sizes so every
-tail path runs, folded to one f64 — checked on every roofline run and
-on every reference-runner draw to date, **all green on every check**.
+its lanes in a fixed order). It is verified by 90 determinism probes
+(21 f64 + 21 f32 + 24 c64 + 24 c32) — fixed-LCG inputs at odd sizes
+so every tail path runs, folded to one f64 — checked on every
+roofline run and on every reference-runner draw to date, **all green
+on every check**.
 
 The expected patterns (a probe value changes ONLY when an
 accumulation order is changed deliberately, like the symv fold — any
@@ -108,8 +111,38 @@ element; complex results folded re+im):
 | L3 trsm_right | `40372a3fb5d5004e` |
 | L3 hemm_right | `41185b38c1688ef6` |
 
+And the c32 probes (f32 recipes, folds widened to f64 once at the
+end):
+
+| probe | c32 |
+|---|---|
+| L1 dotu | `c005e2f700000000` |
+| L1 dotc | `c036ce4280000000` |
+| L1 nrm2 | `4039c70360000000` |
+| L1 asum | `408f416520000000` |
+| L1 iamax | `4088d00000000000` |
+| L2 gemv | `40f6bcff40000000` |
+| L2 gemv_t | `40f6beeac0000000` |
+| L2 gemv_c | `40f6bd73a0000000` |
+| L2 geru | `4090e9f5e0000000` |
+| L2 gerc | `40909f92c0000000` |
+| L2 hemv | `40f6b3dc80000000` |
+| L2 trmv | `40ffae4600000000` |
+| L2 trsv | `40883fcb60000000` |
+| L2 her | `4090051e00000000` |
+| L2 her2 | `4090084d00000000` |
+| L3 gemm | `41094ac240000000` |
+| L3 hemm_left | `41185ae040000000` |
+| L3 herk | `41218a1c80000000` |
+| L3 her2k | `41054b69c0000000` |
+| L3 trmm_left | `41184e0ba0000000` |
+| L3 trsm_left | `403729f220000000` |
+| L3 trmm_right | `4118482180000000` |
+| L3 trsm_right | `40372f9420000000` |
+| L3 hemm_right | `4118613a80000000` |
+
 Regenerate/verify: `cd ../bench && cargo run --release --bin native
-l{1,2,3}-bits[-f32|-z]` for the native side; the roofline scripts
+l{1,2,3}-bits[-f32|-z|-c]` for the native side; the roofline scripts
 compare the wasm build against a bits file and abort on any mismatch.
 These values have been continuous through the tuning campaign's
 bit-preserving levers and the 2026-07-19 restructures (verified at

@@ -58,9 +58,9 @@ running in the browser engine. Numbers >1 mean we're faster.
 
 ### Single precision, complex (c32)
 
-Nothing of ours exists. faer's built-in c32 works but is untested and
-unmeasured by us. Building c32 versions of our kernels is a known,
-scoped job — queued behind the packaging decision.
+Our own BLAS layer now covers c32 (see §3 — built 2026-07-19).
+Above the BLAS layer, nothing of ours exists: faer's built-in c32
+LAPACK-level operations work but are untested and unmeasured by us.
 
 ## 3. The direction reset (2026-07-18) — read this first
 
@@ -127,6 +127,24 @@ re-derivation of the project goals. The decisions, in plain terms:
   matrix–matrix op built on it at ~40%. Not built (nothing needs
   them yet): the complex-symmetric (non-Hermitian) variants, the
   complex-sine rotation apply, and all of c32.
+- **The c32 BLAS layer is built — the four-type grid is complete**
+  (2026-07-19): the complex single-precision routines, cloned from
+  the complex double layer with one real change — each SIMD register
+  now carries two complex numbers instead of one, so the shuffle
+  patterns work in pairs and odd-length vectors get a one-element
+  tail (provably identical arithmetic, same as everywhere else). 40
+  new tests (144 total, all green), all 24 new cross-target checks
+  bit-identical on the container and both CI machines. The headline:
+  complex-single matrix–matrix runs at **75–87% of the machine's
+  f32 arithmetic limit**, and its matrix multiply — at 85% of a
+  ~30.5 GFLOP/s ceiling — is the fastest operation in absolute terms
+  in the entire library, without the register-tile trick the real
+  types needed. Same known weak spot as complex-double (the fused
+  Hermitian multiply-vector grouping, a recorded lever). With all
+  four number types built, tested, and speed-scored, the BLAS layer's
+  planned coverage is COMPLETE — remaining work in it is measured
+  tuning, not construction — and the plan's next stage (re-routing
+  the LAPACK-layer kernels onto our own BLAS) is unblocked.
 - **The f64 tuning pass is DONE — campaign closed 2026-07-19**:
   before cloning the layer into the other number types, the f64
   loops were made fast (Andy's revised sequencing — the clones

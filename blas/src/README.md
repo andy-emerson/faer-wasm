@@ -82,10 +82,11 @@ Notes:
 - `rotg` and copy/swap/rot/nrm2/asum/iamax are leaves — nothing in
   the crate calls them; consumers do.
 
-## The c64 layer (z-routines) — same graph, renamed nodes
+## The complex layers (z- and c-routines) — same graph, renamed nodes
 
-The complex layer is the same picture with node substitutions —
-**26 routines / 31 operations** (counting convention: crate README):
+The two complex layers (c64 z-prefixed, c32 c-prefixed — identical
+structure) are the same picture with node substitutions — **26
+routines / 31 operations** each (counting convention: crate README):
 
 - *Splits*: `dot` → `dotu` + `dotc` (unconjugated/conjugated are
   different results); `ger` → `geru` + `gerc`; `gemv` gains a third
@@ -95,10 +96,12 @@ The complex layer is the same picture with node substitutions —
   (fused, no outgoing arrows, same as symv), `syr`/`syr2` →
   `her`/`her2`, `symm` → `hemm`, `syrk` → `herk`, `syr2k` → `her2k` —
   with the same edges as their real twins.
-- *Delegations, not nodes*: `zcopy`/`zswap`/`zdrot`/`zdscal`/
-  `dznrm2`/`dzasum` are one-line calls to the tuned d-routines on the
-  interleaved 2n-real view (`c64.rs`) — they inherit the d-stream's
-  speed, guards, and determinism rather than duplicating the loops.
-- `rot` is the real-c,s `zdrot`; `zrotg` generates the complex Givens
-  (c real, s complex) — the complex-s application (`zrot`) has no
-  consumer yet.
+- *Delegations, not nodes*: copy/swap/rot/the real-α scal/nrm2/asum
+  are one-line calls to the tuned same-precision real routines on the
+  interleaved 2n-real view (`c64.rs`/`c32.rs`) — they inherit the
+  real stream's speed, guards, and determinism rather than
+  duplicating the loops (c64: zcopy/zswap/zdrot/zdscal/dznrm2/dzasum;
+  c32: ccopy/cswap/csrot/csscal/scnrm2/scasum).
+- `rot` is the real-c,s form (`zdrot`/`csrot`); `zrotg`/`crotg`
+  generate the complex Givens (c real, s complex) — the complex-s
+  application (`zrot`) has no consumer yet.

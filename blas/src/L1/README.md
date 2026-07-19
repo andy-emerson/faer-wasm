@@ -15,14 +15,15 @@ tables in the crate README:
 | `d` | f64 (double) | `daxpy`, `dgemm` |
 | `s` | f32 (single) | `saxpy`, `sgemm` |
 | `z` | c64 (double complex) | `zaxpy`, `zgemm` — built 2026-07-19 |
-| `c` | c32 (single complex) | `caxpy` — undecided, never shipped |
+| `c` | c32 (single complex) | `caxpy`, `cgemm` — built 2026-07-19 |
 
 The index routines put `i` first and the type second: `idamax` /
-`isamax` / `izamax` (index of the largest element — |x| for real,
-|re|+|im| for complex). The complex routines that return a real carry
-both letters, exactly as reference BLAS spells them: `dznrm2`,
-`dzasum`; and the real-scalar/real-rotation forms keep reference
-names too: `zdscal` (real α), `zdrot` (real c, s).
+`isamax` / `izamax` / `icamax` (index of the largest element — |x|
+for real, |re|+|im| for complex). The complex routines that return a
+real carry both letters, exactly as reference BLAS spells them:
+`dznrm2`/`scnrm2`, `dzasum`/`scasum`; and the real-scalar/
+real-rotation forms keep reference names too: `zdscal`/`csscal`
+(real α), `zdrot`/`csrot` (real c, s).
 
 ## Where we deviate from reference BLAS — deliberately, per routine
 
