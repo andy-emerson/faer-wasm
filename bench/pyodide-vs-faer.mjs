@@ -18,6 +18,20 @@ if (!wasmPath) {
 	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
 	process.exit(2);
 }
+// TEMPORARY: route this run to the L1/L2/L3 roofline scoreboards
+// (tuning levers 2-4 runner confirmation; revert after draws)
+{
+	const { execSync } = await import('node:child_process');
+	const run = (cmd) => execSync(cmd, { stdio: 'inherit' });
+	run('cargo run --release --bin native l1-bits > /tmp/native-l1-bits.txt');
+	run('cargo run --release --bin native l2-bits > /tmp/native-l2-bits.txt');
+	run('cargo run --release --bin native l3-bits > /tmp/native-l3-bits.txt');
+	run(`node l1-roofline.mjs ${wasmPath} /tmp/native-l1-bits.txt`);
+	run(`node l2-roofline.mjs ${wasmPath} /tmp/native-l2-bits.txt`);
+	run(`node l3-roofline.mjs ${wasmPath} /tmp/native-l3-bits.txt`);
+	process.exit(0);
+}
+
 const SIZES = [64, 128, 256, 512];
 // [name, faer bench export, faer args (fixed), python lambda body]
 // The *_tuned rows use the docs/wasm.md §7 parameters — the honest current
