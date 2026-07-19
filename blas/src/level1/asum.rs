@@ -21,13 +21,19 @@ pub fn asum(x: &[f64]) -> f64 {
 unsafe fn imp(xp: *const f64, len: usize) -> f64 {
 	let mut a0 = F64x2::splat(0.0);
 	let mut a1 = F64x2::splat(0.0);
+	let mut a2 = F64x2::splat(0.0);
+	let mut a3 = F64x2::splat(0.0);
 	let mut i = 0usize;
-	while i + 4 <= len {
+	// 4 accumulator registers (tuning lever, 2026-07-19): the 2-register
+	// version left the reductions latency-bound at 60-80%% of triad
+	while i + 8 <= len {
 		a0 = a0.add(F64x2::load(xp.add(i)).abs());
 		a1 = a1.add(F64x2::load(xp.add(i + 2)).abs());
-		i += 4;
+		a2 = a2.add(F64x2::load(xp.add(i + 4)).abs());
+		a3 = a3.add(F64x2::load(xp.add(i + 6)).abs());
+		i += 8;
 	}
-	let a = a0.add(a1);
+	let a = a0.add(a1).add(a2.add(a3));
 	let mut s = a.lane0() + a.lane1();
 	while i < len {
 		s += (*xp.add(i)).abs();

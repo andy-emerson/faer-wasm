@@ -45,15 +45,22 @@ pub fn nrm2(x: &[f64]) -> f64 {
 unsafe fn sumsq(xp: *const f64, len: usize) -> f64 {
 	let mut acc0 = F64x2::splat(0.0);
 	let mut acc1 = F64x2::splat(0.0);
+	let mut acc2 = F64x2::splat(0.0);
+	let mut acc3 = F64x2::splat(0.0);
 	let mut i = 0usize;
-	while i + 4 <= len {
+	// 4 accumulator registers (tuning lever, 2026-07-19)
+	while i + 8 <= len {
 		let x0 = F64x2::load(xp.add(i));
 		let x1 = F64x2::load(xp.add(i + 2));
+		let x2 = F64x2::load(xp.add(i + 4));
+		let x3 = F64x2::load(xp.add(i + 6));
 		acc0 = acc0.add(x0.mul(x0));
 		acc1 = acc1.add(x1.mul(x1));
-		i += 4;
+		acc2 = acc2.add(x2.mul(x2));
+		acc3 = acc3.add(x3.mul(x3));
+		i += 8;
 	}
-	let acc = acc0.add(acc1);
+	let acc = acc0.add(acc1).add(acc2.add(acc3));
 	let mut s = acc.lane0() + acc.lane1();
 	while i < len {
 		let v = *xp.add(i);

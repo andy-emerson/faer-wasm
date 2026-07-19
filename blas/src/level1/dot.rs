@@ -21,17 +21,18 @@ pub fn dot(x: &[f64], y: &[f64]) -> f64 {
 unsafe fn imp(xp: *const f64, yp: *const f64, len: usize) -> f64 {
 	let mut acc0 = F64x2::splat(0.0);
 	let mut acc1 = F64x2::splat(0.0);
+	let mut acc2 = F64x2::splat(0.0);
+	let mut acc3 = F64x2::splat(0.0);
 	let mut i = 0usize;
-	while i + 4 <= len {
-		let x0 = F64x2::load(xp.add(i));
-		let y0 = F64x2::load(yp.add(i));
-		let x1 = F64x2::load(xp.add(i + 2));
-		let y1 = F64x2::load(yp.add(i + 2));
-		acc0 = acc0.add(x0.mul(y0));
-		acc1 = acc1.add(x1.mul(y1));
-		i += 4;
+	// 4 accumulator registers (tuning lever, 2026-07-19)
+	while i + 8 <= len {
+		acc0 = acc0.add(F64x2::load(xp.add(i)).mul(F64x2::load(yp.add(i))));
+		acc1 = acc1.add(F64x2::load(xp.add(i + 2)).mul(F64x2::load(yp.add(i + 2))));
+		acc2 = acc2.add(F64x2::load(xp.add(i + 4)).mul(F64x2::load(yp.add(i + 4))));
+		acc3 = acc3.add(F64x2::load(xp.add(i + 6)).mul(F64x2::load(yp.add(i + 6))));
+		i += 8;
 	}
-	let acc = acc0.add(acc1);
+	let acc = acc0.add(acc1).add(acc2.add(acc3));
 	let mut s = acc.lane0() + acc.lane1();
 	while i < len {
 		s += *xp.add(i) * *yp.add(i);

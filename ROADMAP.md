@@ -34,10 +34,14 @@ until blas is done." Revised same day (Andy: "Maybe we should tune and
 benchmark f64 before we implement the other types?" — yes: the type
 clones inherit tuned shapes for free instead of re-tuning ×3):
 1. **f64 Level 3** completes the f64 layer — DONE 2026-07-18;
-2. **tune + benchmark f64**: the recorded levers (micro-tiling gemm,
-   2-column gemv blocking, fused symv, reduction accumulators, iamax
-   fused pass, per-op FMA variants), each a same-machine A/B with
-   runner draws, winners only; re-run the faer race after;
+2. **tune + benchmark f64** — IN PROGRESS. Done: gemm dispatch
+   (tiled4x4 ≤1.5MB of A / col4 above — beats faer 1.25–1.8× at every
+   size, two runner draws, docs step 6); 4-accumulator reductions
+   (asum 2.2×, nrm2 2.1×, dot 1.4× on the container — RUNNER
+   CONFIRMATION PENDING, re-run l1-roofline draws). Remaining levers:
+   apply tiled/col4 shapes to symm/syrk/syr2k/trmm/trsm; 2-column
+   gemv; fused symv; iamax fused pass; per-op FMA variants
+   (relaxed-simd build); then re-run the faer race and the rooflines;
 3. **the other number types** — the tuned layer cloned into f32 and
    c64 (c32: decide when reached — nothing has ever shipped c32);
 4. **only then** does any LAPACK-layer work resume (the kernel
