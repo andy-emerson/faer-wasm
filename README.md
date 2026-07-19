@@ -25,6 +25,17 @@ Hessenberg: replaced). The result is a growing wasm-shaped layer
 (`kernels/`, `schur/`) over faer's foundation that may end up different
 from both ancestors, and that's the point.
 
+**Re-derived end state (2026-07-18 architect session; wording drafted
+by the engineer, pending Andy's sign-off).** The destination is a
+self-contained, wasm-native library: LAPACK's coverage and accuracy,
+every algorithm and routing chosen by measurement on the target, and
+**success measured as distance from the machine's ceiling** — memory
+bandwidth for streaming work, peak arithmetic for multiply-class work —
+with scipy kept only as the market comparison. faer is scaffolding,
+retired one measured campaign at a time (the BLAS layer is being
+rebuilt first; the LAPACK-layer kernels then stand on it). Full record:
+ROADMAP "Re-derived goals".
+
 ## Contents
 
 - `STATUS.md` — **start here**: the one-page plain-English scoreboard —
@@ -153,6 +164,22 @@ their evidence.
 | c64 eig (ctrevc kernel, dlaln2-guarded complex solves + triangular back-transform): correct — residuals ~1e-10·n at n=1–512 incl. complex-multishift route, defective path finite | tested | CI-enforced | `kernels/tests/eigvec_cplx.rs`, per gate run |
 | eig_c64_k vs np.linalg.eig(ac): WIN at ALL five sizes, ranges separate — 3.24×/2.78×/2.61×/2.18×/2.11× at n=64–1024, the widest replicated margins in the project | observed | scripted | replication gate, run 29177564170 |
 | verdict-stability rule: rows with <~1.3× margin flip WIN/LOSS with the CI machine drawn (c64 Schur@256: 0.89×/0.89×/1.21× across three machines; schur_k@512: 1.10×/0.95×); margins ≥1.4× replicate on every machine | observed | cross-checked | replication gates, runs 29157035070 + 29175738677 + 29177564170 |
+| BLAS-layer A/B: flat SIMD streaming loops beat faer's blocked Level 3 by 1.1–1.45× through n=512 on all three reference-machine draws (gemm 1.07–1.33×); n=1024 machine-dependent; L1/L2 parity (bandwidth-bound). R ≤ 1 in the shipping regime (FMA confound since closed — row below) | observed | scripted | `bench/blas-ab.mjs`, runs 29631062796/29631536777/29631542527 + dev-container run; docs/blas-ab-2026-07.md |
+| machine ceilings: bandwidth 12.2–17.8 GB/s, peak f64 SIMD ~12.5 GFLOP/s plain / 23.1–25.3 GFLOP/s FMA build; streaming gemm at ~55% of plain, 27% of FMA ceiling. FMA does not rescue faer's L3 (plain loop still ahead 2 of 3 draws); per-op FMA verdicts: helps trmm/trsm/gemv, neutral gemm, hurts syrk on all draws | observed | scripted | `bench/ceilings.mjs` + `bench/blas-ab.mjs --fma`, runs 29634584232/29634587324/29634591008; docs/blas-ab-2026-07.md |
+| L1 assumption race: hand-SIMD beats the plain loop for swap 1.15–1.33×, asum 3.5–4×, iamax 1.4–1.6× on all three runner draws (26/27 rows range-separated) — all three "SIMD buys nothing" plan-table assumptions refuted | observed | scripted | `bench/l1-ab.mjs`, runs 29648971889/29648968138/29648964550; docs/blas-ab-2026-07.md step 2 |
+| BLAS layer Level 1 (blas/ crate, 10 f64 functions): elementwise streams bit-for-bit vs the scalar definition, reductions error-bounded vs compensated reference, iamax index exact, nrm2 over/underflow guards exercised — 12 tests | tested | scripted | `blas/tests/level1.rs` (CI gate line pending — workflow edit needs Andy's token) |
+| L1 reductions bit-identical native ↔ wasm BY CONSTRUCTION (lane-emulating fallback), 4/4 probes on container + both runner draws | tested | scripted | `blas/src/lanes.rs`; `run_l1_probe` vs `native l1-bits` in `bench/l1-roofline.mjs` |
+| L1 roofline on runners: RMW streams 81–100% of fastest same-run stream, copy/dot at the triad read ceiling, reductions 60–80% of triad, iamax ~70% counting both passes | observed | scripted | `bench/l1-roofline.mjs`, runs 29653617403/29653615147; docs/blas-ab-2026-07.md step 3 |
+| simd128 is NOT in rustc's default wasm32 feature set — unannotated SIMD wrappers cost 6.4× on reductions (corrects the carried "default since 1.82" claim); step-1 bandwidth ceilings were probe-depressed (~32 GB/s real vs 12–18 recorded, alloc inside the timed region) | tested | scripted | same-build A/B 2026-07-18; `rustc --print cfg`; docs/blas-ab-2026-07.md step 3 |
+| BLAS layer Level 2 (7 f64 functions as Level-1 compositions): bit-for-bit vs same-order references for all pure column-axpy ops incl. uplo/unit variants, compensated-summation bounds throughout, trsv residual-verified; 8/8 determinism probes bit-identical native ↔ wasm on container + both runner draws | tested | scripted | `blas/tests/level2.rs`; `run_l2_probe` vs `native l2-bits` |
+| L2 roofline on runners: ger/syr at 83–100% of ceiling; gemv-class ~17 GB/s (≈half the read ceiling, CPU-limited per element — 2-column-blocking lever recorded); symv 25–27% (fused-pass lever recorded); trmv/trsv 41–58% | observed | scripted | `bench/l2-roofline.mjs`, runs 29659232812/29659229539; docs/blas-ab-2026-07.md step 4 |
+| BLAS layer Level 3 (6 f64 functions, both sides for symm/trmm/trsm): bit-for-bit vs same-order references (gemm/syrk/syr2k), bounds everywhere, trsm residuals both sides; 9/9 determinism probes bit-identical native ↔ wasm; shipped gemm matches the raced loop and edges faer in the same build (49.3/50.9/52.2 ms @512) — the f64 layer is complete (23 fns, 27 tests) | tested | scripted | `blas/tests/level3.rs`; `run_l3_probe` vs `native l3-bits` |
+| L3 roofline on runners: 34–44% of the same-run arithmetic peak (~15.2 GFLOP/s), two draws within 1% on every row; gemm 6.7 GFLOP/s at n=512 — headroom = the step-1 tuning levers (micro-tiling, per-op FMA) | observed | scripted | `bench/l3-roofline.mjs`, runs 29661815788/29661812972; docs/blas-ab-2026-07.md step 5 |
+| tuned gemm beats faer at every measured size (tiled4x4 1.4–1.8× ≤384, col4 ~1.25× ≥512; two runner draws within 3%); size dispatch at 1.5 MB of A is result-invisible — all three shapes bit-for-bit identical | observed | scripted | `bench/gemm-tune-ab.mjs`, runs 29665765424/29665763052; `gemm_tiled_bit_identical_to_gemm` test; docs step 6 |
+| 4-accumulator reductions: dot AT the triad read ceiling on both runner draws (36.3/35.4 GB/s vs triad 38.5/36.1), nrm2/asum 73–97% of triad (was 60–80%); gemv_t inherited the gain through composition untouched (17 → 22–29 GB/s) | observed | scripted | `bench/l1-roofline.mjs`, runs 29669397117/29669395117; docs step 7 |
+| blocked fan-out/fan-in shapes through gemv + all Level 3, runner-confirmed both draws: gemv 29–31 GB/s (was ~17), L3 family 48–56% of arithmetic peak (was 34–44%); bit-identity to plain preserved everywhere except the two documented trmm/trsm-right reorders, all locked by same-order replay tests (30 tests) | observed | scripted | `blas/src/kernels.rs`; `blas/tests/level3.rs` replays; runs 29669397117/29669395117; docs step 7 |
+| fused 4-column symv: ~2× on both runner draws (0.60–0.66 ms vs 1.12–1.27 at n=2048); symm_left rides it to 84–86% of the arithmetic peak (was 44–50%) — the highest Level-3 row; blocked trmv/trsv ~1.3× (bit-identical, locked by existing tests) | observed | scripted | `blas/src/kernels.rs` axpy_dot/axpy_dot4/axpy4in; runs 29670218479/29670215776; docs steps 8–9 |
+| fused single-pass iamax REFUTED by the same draws (1.39×/1.60× copy's time vs 1.35/1.36 two-pass) — reverted; negative result recorded in the module docs | observed | scripted | docs step 9; `blas/src/level1/iamax.rs` |
 | post-allocator-fix scoreboard (the new reference): real schur_k WINS 1.24×/1.67×/1.08×/1.10× at n=64–512 (0.99× at 1024), eigvals_k3 WINS at all five sizes incl. 512/1024 (1.52×/1.51×) — pre-fix 512/1024 losses and the eigvals 512-parity were leak-allocator tax on our side (scipy unaffected; its times moved <5% between runs while ours dropped 1.6–1.8×) | observed | scripted | runs 29146566266 (pre) vs 29157035070 (post), same protocol |
 | faer's c64 matmul allocates per-call temporaries via GlobalAlloc (one n=600 c64 multishift: 15.4 GB cumulative, ~25K allocations, peak live ~19 MB) — fatal on leak-only bump allocators; LIFO-rewind shim fixes it (probe values bit-identical) | tested | CI-enforced | `kernels/tests/alloc_probe.rs` peak-live guard + wasm gate on the new shims |
 

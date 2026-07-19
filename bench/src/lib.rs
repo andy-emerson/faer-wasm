@@ -17,6 +17,9 @@ struct State {
     a: Mat<f64>,
     b: Mat<f64>,
     sym: Mat<f64>,
+    // a's values with a dominant diagonal: triangular solves/multiplies
+    // stay bounded across repeated bench iterations
+    tri: Mat<f64>,
     rhs: Mat<f64>,
     ac: Mat<faer::c64>,
     bc: Mat<faer::c64>,
@@ -55,6 +58,10 @@ pub extern "C" fn setup(n: usize) {
     for i in 0..n {
         sym[(i, i)] += 2.0 * n as f64;
     }
+    let mut tri = a.to_owned();
+    for i in 0..n {
+        tri[(i, i)] = 2.0 * n as f64 + 1.0;
+    }
     let rhs = fill(n, 1, 0x853C49E6748FEA9B);
     // c64 twins of a/b/rhs for the complex ops
     let re = fill(n, n, 0x2545F4914F6CDD1D);
@@ -69,7 +76,7 @@ pub extern "C" fn setup(n: usize) {
     let a32 = Mat::from_fn(n, n, |i, j| a[(i, j)] as f32);
     let b32 = Mat::from_fn(n, n, |i, j| b[(i, j)] as f32);
     let rhs32 = Mat::from_fn(n, 1, |i, j| rhs[(i, j)] as f32);
-    unsafe { *STATE.0.get() = Some(State { a, b, sym, rhs, ac, bc, rhsc, a32, b32, rhs32 }) }
+    unsafe { *STATE.0.get() = Some(State { a, b, sym, tri, rhs, ac, bc, rhsc, a32, b32, rhs32 }) }
 }
 
 #[no_mangle]
@@ -980,6 +987,955 @@ pub extern "C" fn run_qr_factor_wk() -> f64 {
     faer_wasm_kernels::qr::qr_factor_in_place(f.as_mut(), &mut tau);
     f[(0, 0)] + f[(n - 1, n - 1)] + tau[n / 2]
 }
+
+// ---- BLAS-layer A/B (architect-directed, 2026-07-13): for every
+// "unchanged" BLAS-level operation, a streaming-loop variant built on our
+// SIMD primitives, timed interleaved against the faer path on one machine
+// (bench/blas-ab.mjs). Tests the standing policy that shaping only pays
+// where an op is hot AND arithmetic-bound: prediction is parity for the
+// bandwidth-bound Level-1/2 rows and a faer win of ~R for the Level-3
+// rows (the gemm row IS the R measurement). op codes:
+//   0 copy   1 gemv   2 ger    3 trsv (upper, 1 rhs)
+//   4 gemm   5 syrk (lower C=A·Aᵀ)   6 trmm (C=U·B)   7 trsm (U·X=B)
+// variant: 0 = faer path, 1 = streaming loops. Returns a probe double.
+// Fused (FMA) twins for the streaming loops, compiled only when the build
+// enables relaxed-simd: `dst[i] += alpha * src[i]` in one rounding via
+// `f64x2_relaxed_madd`. Variant 2 of run_blas_ab uses these; in a plain
+// build variant 2 falls back to the plain loop (race it only on the FMA
+// build). Ceiling probes at the bottom follow the same pattern.
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+#[target_feature(enable = "simd128", enable = "relaxed-simd")]
+unsafe fn axpy_fma(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
+    use core::arch::wasm32::*;
+    let va = f64x2_splat(alpha);
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let d0 = v128_load(dst.add(i) as *const v128);
+        let s0 = v128_load(src.add(i) as *const v128);
+        let d1 = v128_load(dst.add(i + 2) as *const v128);
+        let s1 = v128_load(src.add(i + 2) as *const v128);
+        v128_store(dst.add(i) as *mut v128, f64x2_relaxed_madd(va, s0, d0));
+        v128_store(dst.add(i + 2) as *mut v128, f64x2_relaxed_madd(va, s1, d1));
+        i += 4;
+    }
+    while i < len {
+        *dst.add(i) += *src.add(i) * alpha;
+        i += 1;
+    }
+}
+
+/// `dst += alpha·src` — fused when the build has relaxed-simd, otherwise the
+/// plain kernel primitive (note the sign: kernels' axpy is dst -= src·alpha).
+#[inline(always)]
+unsafe fn axpy_acc(dst: *mut f64, src: *const f64, alpha: f64, len: usize) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+    {
+        axpy_fma(dst, src, alpha, len);
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "relaxed-simd")))]
+    {
+        use faer_wasm_kernels::scalar::WasmScalar;
+        f64::axpy(dst, src, -alpha, len);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn run_blas_ab(op: usize, variant: usize) -> f64 {
+    use faer::linalg::matmul::matmul;
+    use faer::linalg::matmul::triangular::{self, BlockStructure};
+    use faer::linalg::triangular_solve;
+    use faer::Accum;
+    use faer_wasm_kernels::scalar::WasmScalar;
+    let s = state();
+    let n = s.a.nrows();
+    // an upper-triangular, well-conditioned U for the triangular ops
+    let mut u = s.a.to_owned();
+    for j in 0..n {
+        for i in j + 1..n {
+            u[(i, j)] = 0.0;
+        }
+        u[(j, j)] += 4.0; // diagonal dominance keeps the solves tame
+    }
+    match (op, variant) {
+        // ---- copy: C <- B
+        (0, 0) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            c.copy_from(s.b.as_ref());
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (0, 1) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let bp = s.b.as_ref().as_ptr();
+            let bcs = s.b.col_stride() as usize;
+            for j in 0..n {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bp.add(j * bcs), cp.add(j * ccs), n);
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- gemv: y <- A·x
+        (1, 0) => {
+            let mut y = Mat::<f64>::zeros(n, 1);
+            matmul(y.as_mut(), Accum::Replace, s.a.as_ref(), s.rhs.as_ref(), 1.0, Par::Seq);
+            y[(0, 0)] + y[(n - 1, 0)]
+        }
+        (1, 1) => {
+            let mut y = alloc::vec![0.0f64; n];
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                unsafe { f64::axpy(y.as_mut_ptr(), ap.add(j * acs), -s.rhs[(j, 0)], n) };
+            }
+            y[0] + y[n - 1]
+        }
+        // ---- ger: A <- A + x·yᵀ  (y = x here; rank-1 update)
+        (2, 0) => {
+            let mut c = s.b.to_owned();
+            matmul(
+                c.as_mut(),
+                Accum::Add,
+                s.rhs.as_ref(),
+                s.rhs.transpose(),
+                1.0,
+                Par::Seq,
+            );
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (2, 1) => {
+            let mut c = s.b.to_owned();
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let xp = s.rhs.as_ref().as_ptr();
+            for j in 0..n {
+                unsafe { f64::axpy(cp.add(j * ccs), xp, -s.rhs[(j, 0)], n) };
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (1, 2) => {
+            let mut y = alloc::vec![0.0f64; n];
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                unsafe { axpy_acc(y.as_mut_ptr(), ap.add(j * acs), s.rhs[(j, 0)], n) };
+            }
+            y[0] + y[n - 1]
+        }
+        // ---- trsv: U·x = b, one right-hand side
+        (3, 0) => {
+            let mut x = s.rhs.to_owned();
+            triangular_solve::solve_upper_triangular_in_place(u.as_ref(), x.as_mut(), Par::Seq);
+            x[(0, 0)] + x[(n - 1, 0)]
+        }
+        (3, 1) => {
+            let mut x = alloc::vec![0.0f64; n];
+            for i in 0..n {
+                x[i] = s.rhs[(i, 0)];
+            }
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for j in (0..n).rev() {
+                x[j] /= u[(j, j)];
+                unsafe { f64::axpy(x.as_mut_ptr(), up.add(j * ucs), x[j], j) };
+            }
+            x[0] + x[n - 1]
+        }
+        // ---- gemm: C <- A·B
+        (4, 0) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            matmul(c.as_mut(), Accum::Replace, s.a.as_ref(), s.b.as_ref(), 1.0, Par::Seq);
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (4, 1) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    unsafe { f64::axpy(cp.add(j * ccs), ap.add(l * acs), -s.b[(l, j)], n) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (4, 2) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    unsafe { axpy_acc(cp.add(j * ccs), ap.add(l * acs), s.b[(l, j)], n) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- syrk: C (lower) <- A·Aᵀ
+        (5, 0) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            triangular::matmul(
+                c.as_mut(),
+                BlockStructure::TriangularLower,
+                Accum::Replace,
+                s.a.as_ref(),
+                BlockStructure::Rectangular,
+                s.a.transpose(),
+                BlockStructure::Rectangular,
+                1.0,
+                Par::Seq,
+            );
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (5, 1) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    // rows j.. of column j only (lower half)
+                    unsafe {
+                        f64::axpy(cp.add(j + j * ccs), ap.add(j + l * acs), -s.a[(j, l)], n - j)
+                    };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (5, 2) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    unsafe { axpy_acc(cp.add(j + j * ccs), ap.add(j + l * acs), s.a[(j, l)], n - j) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- trmm: C <- U·B
+        (6, 0) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            triangular::matmul(
+                c.as_mut(),
+                BlockStructure::Rectangular,
+                Accum::Replace,
+                u.as_ref(),
+                BlockStructure::TriangularUpper,
+                s.b.as_ref(),
+                BlockStructure::Rectangular,
+                1.0,
+                Par::Seq,
+            );
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (6, 1) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    // U's column l has rows 0..=l
+                    unsafe { f64::axpy(cp.add(j * ccs), up.add(l * ucs), -s.b[(l, j)], l + 1) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        (6, 2) => {
+            let mut c = Mat::<f64>::zeros(n, n);
+            let ccs = c.as_ref().col_stride() as usize;
+            let cp = c.as_mut().as_ptr_mut();
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for j in 0..n {
+                for l in 0..n {
+                    unsafe { axpy_acc(cp.add(j * ccs), up.add(l * ucs), s.b[(l, j)], l + 1) };
+                }
+            }
+            c[(0, 0)] + c[(n - 1, n - 1)]
+        }
+        // ---- trsm: U·X = B, n right-hand sides
+        (7, 0) => {
+            let mut x = s.b.to_owned();
+            triangular_solve::solve_upper_triangular_in_place(u.as_ref(), x.as_mut(), Par::Seq);
+            x[(0, 0)] + x[(n - 1, n - 1)]
+        }
+        (7, 1) => {
+            let mut x = s.b.to_owned();
+            let xcs = x.as_ref().col_stride() as usize;
+            let xp = x.as_mut().as_ptr_mut();
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for k in 0..n {
+                let col = unsafe { xp.add(k * xcs) };
+                for j in (0..n).rev() {
+                    unsafe {
+                        *col.add(j) /= u[(j, j)];
+                        f64::axpy(col, up.add(j * ucs), *col.add(j), j);
+                    }
+                }
+            }
+            x[(0, 0)] + x[(n - 1, n - 1)]
+        }
+        (7, 2) => {
+            let mut x = s.b.to_owned();
+            let xcs = x.as_ref().col_stride() as usize;
+            let xp = x.as_mut().as_ptr_mut();
+            let up = u.as_ref().as_ptr();
+            let ucs = u.as_ref().col_stride() as usize;
+            for k in 0..n {
+                let col = unsafe { xp.add(k * xcs) };
+                for j in (0..n).rev() {
+                    unsafe {
+                        *col.add(j) /= u[(j, j)];
+                        axpy_acc(col, up.add(j * ucs), -*col.add(j), j);
+                    }
+                }
+            }
+            x[(0, 0)] + x[(n - 1, n - 1)]
+        }
+        _ => f64::NAN,
+    }
+}
+
+// ---- L1 assumption race (architect, 2026-07-18): swap/asum/iamax were
+// carried as "hand-SIMD buys nothing" WITHOUT a measurement — exactly what
+// the race-the-foundation rule forbids. op: 0 swap, 1 asum, 2 iamax.
+// variant: 0 plain scalar loop, 1 hand-SIMD. Streams run per column (the
+// matrices may be stride-padded, so a flat n² walk would cross padding).
+#[no_mangle]
+pub extern "C" fn run_l1_ab(op: usize, variant: usize) -> f64 {
+    let s = state();
+    let n = s.a.nrows();
+    match (op, variant) {
+        (0, v) => {
+            // swap: exchange the columns of two working copies
+            let mut x = s.a.to_owned();
+            let mut y = s.b.to_owned();
+            let (xcs, ycs) = (x.as_ref().col_stride() as usize, y.as_ref().col_stride() as usize);
+            let (xp, yp) = (x.as_mut().as_ptr_mut(), y.as_mut().as_ptr_mut());
+            for j in 0..n {
+                unsafe {
+                    if v == 0 {
+                        l1_swap_plain(xp.add(j * xcs), yp.add(j * ycs), n);
+                    } else {
+                        l1_swap_simd(xp.add(j * xcs), yp.add(j * ycs), n);
+                    }
+                }
+            }
+            x[(0, 0)] + y[(n - 1, n - 1)]
+        }
+        (1, v) => {
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            let mut total = 0.0f64;
+            for j in 0..n {
+                total += unsafe {
+                    if v == 0 {
+                        l1_asum_plain(ap.add(j * acs), n)
+                    } else {
+                        l1_asum_simd(ap.add(j * acs), n)
+                    }
+                };
+            }
+            total
+        }
+        (2, v) => {
+            let ap = s.a.as_ref().as_ptr();
+            let acs = s.a.col_stride() as usize;
+            let mut best = -1.0f64;
+            let mut best_idx = 0usize;
+            for j in 0..n {
+                let (m, i) = unsafe {
+                    if v == 0 {
+                        l1_iamax_plain(ap.add(j * acs), n)
+                    } else {
+                        l1_iamax_simd(ap.add(j * acs), n)
+                    }
+                };
+                if m > best {
+                    best = m;
+                    best_idx = j * n + i;
+                }
+            }
+            best + best_idx as f64
+        }
+        _ => f64::NAN,
+    }
+}
+
+// ---- the shipped BLAS layer (blas/ crate), Level 1: roofline rows +
+// cross-target determinism probes. run_l1_layer streams every column of
+// the n×n state through the layer's function; the script scores GB/s
+// against the same-run bandwidth ceiling. Mutating ops run in place on
+// the persistent state (no per-call allocation — the allocator-tax
+// lesson); the chosen constants keep values bounded across iterations
+// (scal by -1, rot by an orthogonal pair, axpy with small alpha).
+fn state_mut() -> &'static mut State {
+    unsafe { (*STATE.0.get()).as_mut().expect("call setup(n) first") }
+}
+
+#[no_mangle]
+pub extern "C" fn run_l1_layer(op: usize) -> f64 {
+    use faer_wasm_blas::level1 as l1;
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let bcs = s.b.as_ref().col_stride() as usize;
+    let ap = s.a.as_mut().as_ptr_mut();
+    let bp = s.b.as_mut().as_ptr_mut();
+    let col = |p: *mut f64, cs: usize, j: usize| unsafe {
+        core::slice::from_raw_parts_mut(p.add(j * cs), n)
+    };
+    let mut sink = 0.0f64;
+    match op {
+        0 => {
+            for j in 0..n {
+                l1::copy(col(ap, acs, j), col(bp, bcs, j));
+            }
+            sink += unsafe { *bp };
+        }
+        1 => {
+            for j in 0..n {
+                l1::swap(col(ap, acs, j), col(bp, bcs, j));
+            }
+            sink += unsafe { *ap };
+        }
+        2 => {
+            for j in 0..n {
+                l1::scal(-1.0, col(ap, acs, j));
+            }
+            sink += unsafe { *ap };
+        }
+        3 => {
+            for j in 0..n {
+                l1::axpy(0.001, col(ap, acs, j), col(bp, bcs, j));
+            }
+            sink += unsafe { *bp };
+        }
+        4 => {
+            for j in 0..n {
+                l1::rot(col(ap, acs, j), col(bp, bcs, j), 0.8, 0.6);
+            }
+            sink += unsafe { *ap };
+        }
+        5 => {
+            for j in 0..n {
+                sink += l1::dot(col(ap, acs, j), col(bp, bcs, j));
+            }
+        }
+        6 => {
+            for j in 0..n {
+                sink += l1::nrm2(col(ap, acs, j));
+            }
+        }
+        7 => {
+            for j in 0..n {
+                sink += l1::asum(col(ap, acs, j));
+            }
+        }
+        8 => {
+            for j in 0..n {
+                sink += l1::iamax(col(ap, acs, j)) as f64;
+            }
+        }
+        _ => return f64::NAN,
+    }
+    sink
+}
+
+/// Level-2 roofline rows over the persistent state. op: 0 gemv,
+/// 1 gemv_t, 2 ger, 3 symv, 4 trmv, 5 trsv, 6 syr, 7 syr2. Mutating
+/// targets and constants chosen so values stay bounded across bench
+/// iterations (small alpha on accumulating updates; trmv/trsv copy a
+/// fresh x from b's first column each call — 8n bytes, noise next to
+/// the 4·n²–16·n² the matrix stream moves).
+#[no_mangle]
+pub extern "C" fn run_l2_layer(op: usize) -> f64 {
+    use faer_wasm_blas::level1 as l1;
+    use faer_wasm_blas::level2 as l2;
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let scs = s.sym.as_ref().col_stride() as usize;
+    let tcs = s.tri.as_ref().col_stride() as usize;
+    let a_len = if n == 0 { 0 } else { acs * (n - 1) + n };
+    let s_len = if n == 0 { 0 } else { scs * (n - 1) + n };
+    let t_len = if n == 0 { 0 } else { tcs * (n - 1) + n };
+    let a = unsafe { core::slice::from_raw_parts(s.a.as_ref().as_ptr(), a_len) };
+    let bx = unsafe { core::slice::from_raw_parts(s.b.as_ref().as_ptr(), n) }; // b's first column
+    let sym = unsafe { core::slice::from_raw_parts_mut(s.sym.as_mut().as_ptr_mut(), s_len) };
+    let tri = unsafe { core::slice::from_raw_parts(s.tri.as_ref().as_ptr(), t_len) };
+    let y = unsafe { core::slice::from_raw_parts_mut(s.rhs.as_mut().as_ptr_mut(), n) };
+    match op {
+        0 => l2::gemv(0.001, n, n, a, acs, bx, 0.5, y),
+        1 => l2::gemv_t(0.001, n, n, a, acs, bx, 0.5, y),
+        2 => l2::ger(0.0001, n, n, sym, scs, bx, bx),
+        3 => l2::symv(0.001, n, sym, scs, true, bx, 0.5, y),
+        4 => {
+            l1::copy(bx, y);
+            l2::trmv(n, tri, tcs, false, false, y);
+        }
+        5 => {
+            l1::copy(bx, y);
+            l2::trsv(n, tri, tcs, false, false, y);
+        }
+        6 => l2::syr(0.0001, n, sym, scs, true, bx),
+        7 => l2::syr2(0.0001, n, sym, scs, true, bx, bx),
+        _ => return f64::NAN,
+    }
+    y[0] + sym[0] + y[n - 1]
+}
+
+/// Level-2 cross-target determinism probes: fixed LCG-filled 257×257
+/// matrix (odd size — tails everywhere), one op each, folded to one
+/// value with the layer's own asum. op: 0 gemv, 1 gemv_t, 2 ger,
+/// 3 symv, 4 trmv, 5 trsv, 6 syr, 7 syr2.
+#[no_mangle]
+pub extern "C" fn run_l2_probe(op: usize) -> f64 {
+    use faer_wasm_blas::level1 as l1;
+    use faer_wasm_blas::level2 as l2;
+    const N: usize = 257;
+    let mut s = 7u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let mut a = Mat::from_fn(N, N, |_, _| next());
+    for i in 0..N {
+        a[(i, i)] = 2.0 * N as f64 + 1.0; // solve-safe diagonal
+    }
+    let cs = a.as_ref().col_stride() as usize;
+    let a_len = cs * (N - 1) + N;
+    let x: [f64; N] = core::array::from_fn(|_| next());
+    let mut y: [f64; N] = core::array::from_fn(|_| next());
+    let am = unsafe { core::slice::from_raw_parts_mut(a.as_mut().as_ptr_mut(), a_len) };
+    match op {
+        0 => l2::gemv(0.7, N, N, am, cs, &x, 0.3, &mut y),
+        1 => l2::gemv_t(0.7, N, N, am, cs, &x, 0.3, &mut y),
+        2 => l2::ger(0.7, N, N, am, cs, &x, &x),
+        3 => l2::symv(0.7, N, am, cs, true, &x, 0.3, &mut y),
+        4 => {
+            y.copy_from_slice(&x);
+            l2::trmv(N, am, cs, false, false, &mut y);
+        }
+        5 => {
+            y.copy_from_slice(&x);
+            l2::trsv(N, am, cs, false, false, &mut y);
+        }
+        6 => l2::syr(0.7, N, am, cs, true, &x),
+        7 => l2::syr2(0.7, N, am, cs, true, &x, &x),
+        _ => return f64::NAN,
+    }
+    let a_probe = unsafe { core::slice::from_raw_parts(a.as_ref().as_ptr(), N) };
+    l1::asum(&y) + y[0] + y[N - 1] + l1::asum(a_probe)
+}
+
+/// Level-3 roofline rows over the persistent state. op: 0 gemm,
+/// 1 symm_left, 2 syrk, 3 syr2k, 4 trmm_left, 5 trsm_left,
+/// 6 trmm_right, 7 trsm_right. The in-place triangular ops re-copy B
+/// fresh from `b` each call (an O(n²) copy against O(n³) work), so
+/// values never grow across iterations; accumulating ops use small
+/// alpha with beta = 0.5. `sym` is the sacrificial destination
+/// (already true for the triad probe); `tri` (dominant diagonal) keeps
+/// the solves bounded.
+#[no_mangle]
+pub extern "C" fn run_l3_layer(op: usize) -> f64 {
+    use faer_wasm_blas::level1 as l1;
+    use faer_wasm_blas::level3 as l3;
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let bcs = s.b.as_ref().col_stride() as usize;
+    let scs = s.sym.as_ref().col_stride() as usize;
+    let tcs = s.tri.as_ref().col_stride() as usize;
+    let len = |cs: usize| if n == 0 { 0 } else { cs * (n - 1) + n };
+    let a = unsafe { core::slice::from_raw_parts(s.a.as_ref().as_ptr(), len(acs)) };
+    let b = unsafe { core::slice::from_raw_parts(s.b.as_ref().as_ptr(), len(bcs)) };
+    let tri = unsafe { core::slice::from_raw_parts(s.tri.as_ref().as_ptr(), len(tcs)) };
+    let sym = unsafe { core::slice::from_raw_parts_mut(s.sym.as_mut().as_ptr_mut(), len(scs)) };
+    let refresh = |dst: &mut [f64]| {
+        for j in 0..n {
+            l1::copy(&b[j * bcs..j * bcs + n], &mut dst[j * scs..j * scs + n]);
+        }
+    };
+    match op {
+        0 => l3::gemm(0.001, n, n, n, a, acs, b, bcs, 0.5, sym, scs),
+        1 => l3::symm_left(0.001, n, n, tri, tcs, true, b, bcs, 0.5, sym, scs),
+        2 => l3::syrk(0.001, n, n, a, acs, 0.5, sym, scs, true),
+        3 => l3::syr2k(0.001, n, n, a, acs, b, bcs, 0.5, sym, scs, true),
+        4 => {
+            refresh(sym);
+            l3::trmm_left(1.0, n, n, tri, tcs, false, false, sym, scs);
+        }
+        5 => {
+            refresh(sym);
+            l3::trsm_left(1.0, n, n, tri, tcs, false, false, sym, scs);
+        }
+        6 => {
+            refresh(sym);
+            l3::trmm_right(1.0, n, n, tri, tcs, true, false, sym, scs);
+        }
+        7 => {
+            refresh(sym);
+            l3::trsm_right(1.0, n, n, tri, tcs, true, false, sym, scs);
+        }
+        _ => return f64::NAN,
+    }
+    sym[0] + sym[len(scs) - 1]
+}
+
+/// Tuning-campaign candidate row: the 4×4 register-tiled gemm on the
+/// same state/constants as run_l3_layer(0) — bit-identical output,
+/// raced for speed only.
+#[no_mangle]
+pub extern "C" fn run_l3_tuned_gemm() -> f64 {
+    use faer_wasm_blas::level3 as l3;
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let bcs = s.b.as_ref().col_stride() as usize;
+    let scs = s.sym.as_ref().col_stride() as usize;
+    let len = |cs: usize| if n == 0 { 0 } else { cs * (n - 1) + n };
+    let a = unsafe { core::slice::from_raw_parts(s.a.as_ref().as_ptr(), len(acs)) };
+    let b = unsafe { core::slice::from_raw_parts(s.b.as_ref().as_ptr(), len(bcs)) };
+    let sym = unsafe { core::slice::from_raw_parts_mut(s.sym.as_mut().as_ptr_mut(), len(scs)) };
+    l3::gemm_tiled(0.001, n, n, n, a, acs, b, bcs, 0.5, sym, scs);
+    sym[0] + sym[len(scs) - 1]
+}
+
+/// Same, for the 4-column fused candidate.
+#[no_mangle]
+pub extern "C" fn run_l3_col4_gemm() -> f64 {
+    use faer_wasm_blas::level3 as l3;
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let bcs = s.b.as_ref().col_stride() as usize;
+    let scs = s.sym.as_ref().col_stride() as usize;
+    let len = |cs: usize| if n == 0 { 0 } else { cs * (n - 1) + n };
+    let a = unsafe { core::slice::from_raw_parts(s.a.as_ref().as_ptr(), len(acs)) };
+    let b = unsafe { core::slice::from_raw_parts(s.b.as_ref().as_ptr(), len(bcs)) };
+    let sym = unsafe { core::slice::from_raw_parts_mut(s.sym.as_mut().as_ptr_mut(), len(scs)) };
+    l3::gemm_col4(0.001, n, n, n, a, acs, b, bcs, 0.5, sym, scs);
+    sym[0] + sym[len(scs) - 1]
+}
+
+/// Level-3 cross-target determinism probes: fixed LCG-filled 65×65
+/// matrices (odd — tails everywhere), one op each, folded column-wise
+/// with the layer's own asum. op order matches run_l3_layer plus
+/// symm_right at 8.
+#[no_mangle]
+pub extern "C" fn run_l3_probe(op: usize) -> f64 {
+    use faer_wasm_blas::level1 as l1;
+    use faer_wasm_blas::level3 as l3;
+    const N: usize = 65;
+    const K: usize = 33;
+    let mut st = 11u64;
+    let mut next = || {
+        st = st
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((st >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let mut a = Mat::from_fn(N, N, |_, _| next());
+    for i in 0..N {
+        a[(i, i)] = 2.0 * N as f64 + 1.0;
+    }
+    let b = Mat::from_fn(N, N, |_, _| next());
+    let mut c = Mat::from_fn(N, N, |_, _| next());
+    let (acs, bcs, ccs) = (
+        a.as_ref().col_stride() as usize,
+        b.as_ref().col_stride() as usize,
+        c.as_ref().col_stride() as usize,
+    );
+    let len = |cs: usize| cs * (N - 1) + N;
+    let av = unsafe { core::slice::from_raw_parts(a.as_ref().as_ptr(), len(acs)) };
+    let bv = unsafe { core::slice::from_raw_parts(b.as_ref().as_ptr(), len(bcs)) };
+    let cv = unsafe { core::slice::from_raw_parts_mut(c.as_mut().as_ptr_mut(), len(ccs)) };
+    match op {
+        0 => l3::gemm(0.7, N, K, N, av, acs, bv, bcs, 0.3, cv, ccs),
+        1 => l3::symm_left(0.7, N, N, av, acs, true, bv, bcs, 0.3, cv, ccs),
+        2 => l3::syrk(0.7, N, K, av, acs, 0.3, cv, ccs, true),
+        3 => l3::syr2k(0.7, N, K, av, acs, bv, bcs, 0.3, cv, ccs, true),
+        4 => l3::trmm_left(0.7, N, N, av, acs, false, false, cv, ccs),
+        5 => l3::trsm_left(0.7, N, N, av, acs, false, false, cv, ccs),
+        6 => l3::trmm_right(0.7, N, N, av, acs, true, false, cv, ccs),
+        7 => l3::trsm_right(0.7, N, N, av, acs, true, false, cv, ccs),
+        8 => l3::symm_right(0.7, N, N, av, acs, true, bv, bcs, 0.3, cv, ccs),
+        _ => return f64::NAN,
+    }
+    let mut fold = 0.0;
+    for j in 0..N {
+        fold += l1::asum(&cv[j * ccs..j * ccs + N]);
+    }
+    fold + cv[0] + cv[len(ccs) - 1]
+}
+
+/// Cross-target determinism probe: fixed LCG data (len 1001 — odd, so the
+/// scalar tail runs too), one reduction per op. Native bin and wasm build
+/// must return identical bits (the lane-emulation construction in
+/// blas/src/lanes.rs). op: 0 dot, 1 asum, 2 nrm2, 3 iamax.
+#[no_mangle]
+pub extern "C" fn run_l1_probe(op: usize) -> f64 {
+    use faer_wasm_blas::level1 as l1;
+    const LEN: usize = 1001;
+    let mut x = [0.0f64; LEN];
+    let mut y = [0.0f64; LEN];
+    let mut s = 42u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    for v in x.iter_mut() {
+        *v = next();
+    }
+    for v in y.iter_mut() {
+        *v = next();
+    }
+    match op {
+        0 => l1::dot(&x, &y),
+        1 => l1::asum(&x),
+        2 => l1::nrm2(&x),
+        3 => l1::iamax(&x) as f64,
+        _ => f64::NAN,
+    }
+}
+
+unsafe fn l1_swap_plain(x: *mut f64, y: *mut f64, len: usize) {
+    for i in 0..len {
+        let t = *x.add(i);
+        *x.add(i) = *y.add(i);
+        *y.add(i) = t;
+    }
+}
+
+unsafe fn l1_asum_plain(x: *const f64, len: usize) -> f64 {
+    let mut s = 0.0;
+    for i in 0..len {
+        s += (*x.add(i)).abs();
+    }
+    s
+}
+
+unsafe fn l1_iamax_plain(x: *const f64, len: usize) -> (f64, usize) {
+    let mut m = -1.0;
+    let mut mi = 0usize;
+    for i in 0..len {
+        let v = (*x.add(i)).abs();
+        if v > m {
+            m = v;
+            mi = i;
+        }
+    }
+    (m, mi)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[target_feature(enable = "simd128")]
+unsafe fn l1_swap_simd(x: *mut f64, y: *mut f64, len: usize) {
+    use core::arch::wasm32::*;
+    let mut i = 0usize;
+    while i + 4 <= len {
+        let x0 = v128_load(x.add(i) as *const v128);
+        let y0 = v128_load(y.add(i) as *const v128);
+        let x1 = v128_load(x.add(i + 2) as *const v128);
+        let y1 = v128_load(y.add(i + 2) as *const v128);
+        v128_store(x.add(i) as *mut v128, y0);
+        v128_store(y.add(i) as *mut v128, x0);
+        v128_store(x.add(i + 2) as *mut v128, y1);
+        v128_store(y.add(i + 2) as *mut v128, x1);
+        i += 4;
+    }
+    while i < len {
+        let t = *x.add(i);
+        *x.add(i) = *y.add(i);
+        *y.add(i) = t;
+        i += 1;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn l1_swap_simd(x: *mut f64, y: *mut f64, len: usize) {
+    l1_swap_plain(x, y, len)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[target_feature(enable = "simd128")]
+unsafe fn l1_asum_simd(x: *const f64, len: usize) -> f64 {
+    use core::arch::wasm32::*;
+    let mut a0 = f64x2_splat(0.0);
+    let mut a1 = f64x2_splat(0.0);
+    let mut i = 0usize;
+    while i + 4 <= len {
+        a0 = f64x2_add(a0, f64x2_abs(v128_load(x.add(i) as *const v128)));
+        a1 = f64x2_add(a1, f64x2_abs(v128_load(x.add(i + 2) as *const v128)));
+        i += 4;
+    }
+    let a = f64x2_add(a0, a1);
+    let mut s = f64x2_extract_lane::<0>(a) + f64x2_extract_lane::<1>(a);
+    while i < len {
+        s += (*x.add(i)).abs();
+        i += 1;
+    }
+    s
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn l1_asum_simd(x: *const f64, len: usize) -> f64 {
+    l1_asum_plain(x, len)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[target_feature(enable = "simd128")]
+unsafe fn l1_iamax_simd(x: *const f64, len: usize) -> (f64, usize) {
+    use core::arch::wasm32::*;
+    // branch-free vector pass for the max VALUE, then one scalar rescan for
+    // its index — the realistic SIMD strategy for an argmax
+    let mut m0 = f64x2_splat(-1.0);
+    let mut m1 = f64x2_splat(-1.0);
+    let mut i = 0usize;
+    while i + 4 <= len {
+        m0 = f64x2_pmax(m0, f64x2_abs(v128_load(x.add(i) as *const v128)));
+        m1 = f64x2_pmax(m1, f64x2_abs(v128_load(x.add(i + 2) as *const v128)));
+        i += 4;
+    }
+    let m = f64x2_pmax(m0, m1);
+    let mut best = f64x2_extract_lane::<0>(m).max(f64x2_extract_lane::<1>(m));
+    while i < len {
+        best = best.max((*x.add(i)).abs());
+        i += 1;
+    }
+    let mut mi = 0usize;
+    for k in 0..len {
+        if (*x.add(k)).abs() == best {
+            mi = k;
+            break;
+        }
+    }
+    (best, mi)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn l1_iamax_simd(x: *const f64, len: usize) -> (f64, usize) {
+    l1_iamax_plain(x, len)
+}
+
+// ---- ceiling probes (roofline metric, adopted 2026-07-18): the two
+// machine limits every benchmark row is scored against.
+
+/// Memory-bandwidth probe: triad c = a + 2.5·b over the n×n state
+/// matrices. Bytes moved per call = 3·8·n² (read a, read b, write c).
+#[no_mangle]
+pub extern "C" fn run_ceiling_bw() -> f64 {
+    // v2 (2026-07-18): the original version allocated + copied an n×n
+    // matrix INSIDE the timed region (to_owned per call) and streamed c
+    // twice — depressing the measured ceiling and miscounting traffic.
+    // Now a pure single-pass triad sym ← a + 2.5·b over persistent
+    // state: exactly 3·8·n² bytes per call, no allocation. (sym is
+    // sacrificed as the destination — don't run symmetric-eigen benches
+    // on the same instance after this probe.)
+    let s = state_mut();
+    let n = s.a.nrows();
+    let acs = s.a.as_ref().col_stride() as usize;
+    let bcs = s.b.as_ref().col_stride() as usize;
+    let ccs = s.sym.as_ref().col_stride() as usize;
+    let ap = s.a.as_ref().as_ptr();
+    let bp = s.b.as_ref().as_ptr();
+    let cp = s.sym.as_mut().as_ptr_mut();
+    for j in 0..n {
+        unsafe {
+            triad(cp.add(j * ccs), ap.add(j * acs), bp.add(j * bcs), n);
+        }
+    }
+    s.sym[(0, 0)] + s.sym[(n - 1, n - 1)]
+}
+
+/// c ← a + 2.5·b, one pass, 2 lanes 2× unrolled.
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+unsafe fn triad(c: *mut f64, a: *const f64, b: *const f64, len: usize) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use core::arch::wasm32::*;
+        let k = f64x2_splat(2.5);
+        let mut i = 0usize;
+        while i + 4 <= len {
+            let a0 = v128_load(a.add(i) as *const v128);
+            let b0 = v128_load(b.add(i) as *const v128);
+            let a1 = v128_load(a.add(i + 2) as *const v128);
+            let b1 = v128_load(b.add(i + 2) as *const v128);
+            v128_store(c.add(i) as *mut v128, f64x2_add(a0, f64x2_mul(b0, k)));
+            v128_store(c.add(i + 2) as *mut v128, f64x2_add(a1, f64x2_mul(b1, k)));
+            i += 4;
+        }
+        while i < len {
+            *c.add(i) = *a.add(i) + *b.add(i) * 2.5;
+            i += 1;
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        for i in 0..len {
+            *c.add(i) = *a.add(i) + *b.add(i) * 2.5;
+        }
+    }
+}
+
+/// Peak-arithmetic probe: register-resident mul+add chains, 8 independent
+/// v128 accumulators × `iters` rounds. FLOPs per call = iters · 8 · 2 lanes
+/// · 2 ops. Fused (one relaxed_madd = still 2 FLOPs) when the build has
+/// relaxed-simd — so this probe measures the ceiling OF THE BUILD.
+#[no_mangle]
+pub extern "C" fn run_ceiling_flops(iters: usize) -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        ceiling_flops_imp(iters)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = iters;
+        f64::NAN
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[target_feature(enable = "simd128")]
+unsafe fn ceiling_flops_imp(iters: usize) -> f64 {
+    use core::arch::wasm32::*;
+    let m = f64x2_splat(1.000000001);
+    let a = f64x2_splat(1e-9);
+    let mut acc = [f64x2_splat(1.0); 8];
+    for _ in 0..iters {
+        for k in 0..8 {
+            #[cfg(target_feature = "relaxed-simd")]
+            {
+                acc[k] = f64x2_relaxed_madd(acc[k], m, a);
+            }
+            #[cfg(not(target_feature = "relaxed-simd"))]
+            {
+                acc[k] = f64x2_add(f64x2_mul(acc[k], m), a);
+            }
+        }
+    }
+    let mut s = 0.0;
+    for k in 0..8 {
+        s += f64x2_extract_lane::<0>(acc[k]) + f64x2_extract_lane::<1>(acc[k]);
+    }
+    s
+}
+
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_shim {

@@ -27,6 +27,101 @@ drop patches the moment a release doesn't need them. New capability is
 built *alongside* faer (companion crates / consumer shim over public
 APIs), not inside it.
 
+## BLAS campaign sequencing (Andy, 2026-07-18)
+
+"Finish f64 layer, then the other layers, then tuning, no more lapack
+until blas is done." Revised same day (Andy: "Maybe we should tune and
+benchmark f64 before we implement the other types?" — yes: the type
+clones inherit tuned shapes for free instead of re-tuning ×3):
+1. **f64 Level 3** completes the f64 layer — DONE 2026-07-18;
+2. **tune + benchmark f64** — DONE, CAMPAIGN CLOSED 2026-07-19 (Andy:
+   "finish up ... merge and close"). Six levers, every verdict backed
+   by two runner draws (docs steps 6–9): gemm dispatch (tiled4x4
+   ≤1.5MB of A / col4 above — beats faer 1.25–1.8× at every size);
+   4-accumulator reductions (dot AT the triad read ceiling, nrm2/asum
+   73–97% of triad, gemv_t inherited the gain through composition);
+   blocked fan-out/fan-in shapes through gemv + all of Level 3
+   (`blas/src/kernels.rs` — gemv 29–31 GB/s was ~17, L3 family 48–56%
+   of peak was 34–44%); fused 4-column symv (symv ~2×, symm_left
+   84–86% of peak — best L3 row on the board); blocked trmv/trsv
+   (~1.3×). One candidate REFUTED and reverted (fused single-pass
+   iamax — loss recorded in its module docs). The roofline re-run IS
+   the final draw pair; the gemm-vs-faer race stands from step 6
+   (gemm code unchanged since). DEFERRED by the close, needs an
+   architect decision before any build: per-op fused-FMA variants —
+   wasm relaxed-madd rounding is implementation-dependent, so
+   shipping them (default or variant) trades away the cross-target
+   bit-identity guarantee; step-1 evidence says they'd help
+   trmm/trsm/gemv and hurt syrk;
+3. **the other number types** — the tuned layer cloned into f32 and
+   c64 (c32: decide when reached — nothing has ever shipped c32);
+4. **only then** does any LAPACK-layer work resume (the kernel
+   re-route onto the layer included).
+
+## Re-derived goals (architect session, 2026-07-18)
+
+Trigger: the BLAS-layer A/B (`docs/blas-ab-2026-07.md`) convicted a
+founding assumption, and the architect called for re-engaging with the
+end state. Four constraints were identified that had accumulated by
+inheritance rather than decision; their dispositions, plus the decisions
+taken in the same session, are the project's standing frame:
+
+**End state.** A self-contained, wasm-native linear algebra library:
+LAPACK's operation coverage and accuracy contract, every algorithm,
+storage layout, and routing decision chosen by measurement on the
+target, judged by distance from the machine's ceiling. faer is
+scaffolding that gets retired one measured campaign at a time; the day
+the algorithm catalog empties, the remaining types question (below)
+decides full independence. Independence is the trajectory's outcome,
+never a rewrite's motive — each function falls when its benchmark
+convicts it, not before.
+
+**The four inherited assumptions and their dispositions:**
+1. *"faer's multiply is the engine"* — CONVICTED (2026-07-18, three
+   runner draws): flat SIMD streaming loops beat faer's blocked Level 3
+   by 1.1–1.45× through n=512 on the reference class; n=1024
+   machine-dependent. Direct measurement of R: ≤ 1 in the shipping
+   regime, pending the FMA confound (below).
+2. *"faer's matrix types are the foundation"* — TABLED by the architect
+   until the algorithm catalog empties. No runtime cost; the eventual
+   decision is API ownership + measurable size/compile-time, not speed.
+3. *"each operation's algorithm is whichever faer implemented"* — the
+   Schur campaign's full-menu survey is the required template for every
+   future function campaign; inheritance without a survey is over.
+4. *"success means beating scipy"* — REPLACED. Success is distance from
+   the machine's ceiling: streaming ops vs measured memory bandwidth,
+   multiply-class ops vs measured peak arithmetic, reported per run via
+   ceiling probes. scipy remains in the harness as the market
+   comparison only.
+
+**Threading decision (architect, 2026-07-18).** No shared-memory CPU
+threading: it requires COOP/COEP cross-origin isolation, which the
+architect excludes as a deployment constraint on consumers — and its
+honest payoff is thin anyway (cores share the memory bus; much of our
+work is bandwidth-bound, and our regime is small-to-mid n; determinism
+would also be lost). Emscripten was never in the path (Rust compiles to
+wasm directly). Kept on the board: batch-level parallelism via plain
+message-passing Workers (consumer-layer concern, no COOP/COEP needed)
+and WebGPU as a future f32 campaign (also no COOP/COEP).
+
+**New working-contract rule: race the foundation.** The multiply sat
+unexamined for two weeks while losing 15–20% because it was the
+presumed floor — measurement-before-rewrite only ever tried candidates
+against incumbents, never incumbents against a null hypothesis. Carried
+dependencies now get raced periodically like everything else.
+
+**Structure decision: BLAS layer first.** The next campaign builds the
+named streaming BLAS layer as a finished product — full operation set
+(inline fragments promoted), every precision served, correctness tests
++ benchmark rows per the coverage rule, the FMA confound settled first
+(faer calls fused multiply-add explicitly; our loops don't yet — the
+one card that could reverse the A/B verdict), large-n crossovers
+measured, roofline-scored, CI-gated. Then the LAPACK-layer kernels
+re-route their bulk onto it. The tuning freeze is LIFTED for this
+campaign — it was protecting routing conclusions measured on the old
+foundation; the deferred global tuning pass happens here, on the new
+floor.
+
 ## Phase 0 — Carry the enabler ✅ (maintenance mode)
 
 - [x] The **4-line 32-bit fix**: `(n >> 32)` → `((n as u64) >> 32) as u32` in
@@ -164,7 +259,9 @@ simd128), with the O(n³) bulk routed through faer's gemm microkernels
 then QR, then the eigen flank; correctness gated in CI (`kernels/tests`)
 alongside the wasm gate.
 
-**Tuning freeze (architect decision, 2026-07-11).** Shape before tune:
+**Tuning freeze (architect decision, 2026-07-11; LIFTED 2026-07-18** — see
+Re-derived goals: the global pass runs inside the BLAS-layer campaign, on
+the post-A/B foundation)**.** Shape before tune:
 parameters are only optimal relative to an implementation, so no more
 tuning *campaigns* (sweeps as deliverables) until the full surface
 exists — f32/c32 layer, shaped Schur (+Z kernels), the SVD small-n
@@ -281,7 +378,7 @@ to one global, replication-graded tuning pass at the end.
       "lean flat panel, scipy parity ~n=256" with no recursion claim to
       defend. Gated (`gate.mjs`). Docs: benchmarks Runs 5–7.
 
-## Next sessions — build-out plan (drafted 2026-07-11, for architect review)
+## Next sessions — build-out plan (drafted 2026-07-11; SUPERSEDED 2026-07-18 by the BLAS-first campaign in Re-derived goals — items below kept as the record and the queue that follows it)
 
 Sequence set by the architect: sweep ✅ → f32/c32 refactor ✅ → the
 items below, with the **tuning freeze** in force until all of them exist,
@@ -470,12 +567,14 @@ unless the architect raises it.
   library (brackets from below; the "why wasm at all" number). Depends
   on audience: consumer tuning vs Ruju-vs-Julia vs wasm value pitch.
 
-## Phase 4 — Threads, later and optional
+## Phase 4 — Threads: DECIDED AGAINST (architect, 2026-07-18)
 
-`Par::Seq` is the wasm story until wasm threads (SharedArrayBuffer +
-atomics) justify more. If demand appears: a `Par` backend over wasm threads
-without `atomic-wait` (busy-wait or `memory.atomic.wait32` where available).
-Not needed for any current consumer; keep as a recorded non-goal until it is.
+Shared-memory wasm threads require COOP/COEP cross-origin isolation,
+which the architect excludes as a consumer deployment constraint; the
+payoff is also thin for this workload (shared memory bus + small-n
+regime + determinism loss). See Re-derived goals. Still on the board:
+consumer-layer batch parallelism via message-passing Workers, and WebGPU
+(f32) as its own future campaign — neither needs COOP/COEP.
 
 ## Upstream ledger (started 2026-07-11 — de-prioritized, not forbidden)
 

@@ -1,4 +1,5 @@
 target/
+target-fma/
 node_modules/
 *.wasm.map
 /faer-rs/
