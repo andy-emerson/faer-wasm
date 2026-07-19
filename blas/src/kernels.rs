@@ -535,3 +535,169 @@ pub(crate) unsafe fn saxpy4in(
 		i += 1;
 	}
 }
+
+// ---- c32 kernels (c-prefixed, TWO complexes per F32x4 register,
+// packed [re0, im0, re1, im1]) ----
+//
+// Same product form as the z-kernels at pair granularity: with
+// vre = splat(t.re) and vim = [−t.im, t.im, −t.im, t.im],
+// x·t = x·vre + swap_pairs(x)·vim — bit-exactly the canonical C32
+// product order per complex (sign-folding is exact; see c32.rs).
+// Odd lengths leave a one-complex scalar tail computed with C32 ops
+// (the same rounding sequence).
+use crate::c32::C32;
+
+/// One sequential pass over a source column updating four destination
+/// columns: cᵤ[i] += a[i]·tᵤ (complex f32).
+///
+/// # Safety
+/// All five column pointers must be valid for `len` C32s; the
+/// destination columns must not alias each other or `a`.
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn caxpy4(
+	a: *const C32,
+	t: [C32; 4],
+	c0: *mut C32,
+	c1: *mut C32,
+	c2: *mut C32,
+	c3: *mut C32,
+	len: usize,
+) {
+	let vre = [
+		F32x4::splat(t[0].re),
+		F32x4::splat(t[1].re),
+		F32x4::splat(t[2].re),
+		F32x4::splat(t[3].re),
+	];
+	let vim = [
+		F32x4::quad(-t[0].im, t[0].im, -t[0].im, t[0].im),
+		F32x4::quad(-t[1].im, t[1].im, -t[1].im, t[1].im),
+		F32x4::quad(-t[2].im, t[2].im, -t[2].im, t[2].im),
+		F32x4::quad(-t[3].im, t[3].im, -t[3].im, t[3].im),
+	];
+	let ap = a as *const f32;
+	let cp = [c0 as *mut f32, c1 as *mut f32, c2 as *mut f32, c3 as *mut f32];
+	let mut i = 0usize;
+	while i + 2 <= len {
+		let av = F32x4::load(ap.add(2 * i));
+		let asw = av.swap_pairs();
+		for u in 0..4 {
+			F32x4::load(cp[u].add(2 * i))
+				.add(av.mul(vre[u]).add(asw.mul(vim[u])))
+				.store(cp[u].add(2 * i));
+		}
+		i += 2;
+	}
+	if i < len {
+		let av = *a.add(i);
+		*c0.add(i) = *c0.add(i) + t[0] * av;
+		*c1.add(i) = *c1.add(i) + t[1] * av;
+		*c2.add(i) = *c2.add(i) + t[2] * av;
+		*c3.add(i) = *c3.add(i) + t[3] * av;
+	}
+}
+
+/// One pass over the destination with four source columns fanned in:
+/// c[i] ← ((((c[i] + a0[i]·t0) + a1[i]·t1) + a2[i]·t2) + a3[i]·t3)
+/// (complex f32; each product fully formed before its add) — the same
+/// rounding sequence as four consecutive plain `caxpy` passes in that
+/// order.
+///
+/// # Safety
+/// All five column pointers must be valid for `len` C32s; the source
+/// columns must not alias the destination.
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn caxpy4in(
+	a0: *const C32,
+	a1: *const C32,
+	a2: *const C32,
+	a3: *const C32,
+	t: [C32; 4],
+	c: *mut C32,
+	len: usize,
+) {
+	let vre = [
+		F32x4::splat(t[0].re),
+		F32x4::splat(t[1].re),
+		F32x4::splat(t[2].re),
+		F32x4::splat(t[3].re),
+	];
+	let vim = [
+		F32x4::quad(-t[0].im, t[0].im, -t[0].im, t[0].im),
+		F32x4::quad(-t[1].im, t[1].im, -t[1].im, t[1].im),
+		F32x4::quad(-t[2].im, t[2].im, -t[2].im, t[2].im),
+		F32x4::quad(-t[3].im, t[3].im, -t[3].im, t[3].im),
+	];
+	let ap = [a0 as *const f32, a1 as *const f32, a2 as *const f32, a3 as *const f32];
+	let cp = c as *mut f32;
+	let mut i = 0usize;
+	while i + 2 <= len {
+		let mut cv = F32x4::load(cp.add(2 * i));
+		for u in 0..4 {
+			let av = F32x4::load(ap[u].add(2 * i));
+			cv = cv.add(av.mul(vre[u]).add(av.swap_pairs().mul(vim[u])));
+		}
+		cv.store(cp.add(2 * i));
+		i += 2;
+	}
+	if i < len {
+		let cv = (((*c.add(i) + t[0] * *a0.add(i)) + t[1] * *a1.add(i)) + t[2] * *a2.add(i))
+			+ t[3] * *a3.add(i);
+		*c.add(i) = cv;
+	}
+}
+
+/// Fused chemv column pass: y[i] += t·a[i] while acc += conj(a[i])·x[i]
+/// — the c32 twin of `zaxpy_dotc` (conjugated product =
+/// dup_even(a)·x + neg_odd(dup_odd(a)·swap_pairs(x)), bit-exactly
+/// `a.conj() * x` per complex). Returns the accumulated dot part;
+/// fold order (two register accumulators, cross-pair add, scalar
+/// tail) is the pass's own — chemv is bounds-tested, not bit-locked.
+///
+/// # Safety
+/// `a`, `x`, `y` must each be valid for `len` C32s; `y` must not
+/// alias `a` or `x`.
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+pub(crate) unsafe fn caxpy_dotc(
+	a: *const C32,
+	t: C32,
+	x: *const C32,
+	y: *mut C32,
+	len: usize,
+) -> C32 {
+	let vre = F32x4::splat(t.re);
+	let vim = F32x4::quad(-t.im, t.im, -t.im, t.im);
+	let ap = a as *const f32;
+	let xp = x as *const f32;
+	let yp = y as *mut f32;
+	let mut acc0 = F32x4::splat(0.0);
+	let mut acc1 = F32x4::splat(0.0);
+	let mut i = 0usize;
+	while i + 4 <= len {
+		let a0 = F32x4::load(ap.add(2 * i));
+		let a1 = F32x4::load(ap.add(2 * i + 4));
+		F32x4::load(yp.add(2 * i))
+			.add(a0.mul(vre).add(a0.swap_pairs().mul(vim)))
+			.store(yp.add(2 * i));
+		F32x4::load(yp.add(2 * i + 4))
+			.add(a1.mul(vre).add(a1.swap_pairs().mul(vim)))
+			.store(yp.add(2 * i + 4));
+		let x0 = F32x4::load(xp.add(2 * i));
+		let x1 = F32x4::load(xp.add(2 * i + 4));
+		acc0 = acc0.add(a0.dup_even().mul(x0).add(a0.dup_odd().mul(x0.swap_pairs()).neg_odd()));
+		acc1 = acc1.add(a1.dup_even().mul(x1).add(a1.dup_odd().mul(x1.swap_pairs()).neg_odd()));
+		i += 4;
+	}
+	let f = acc0.add(acc1);
+	// fold the two packed complexes: pair 0 + pair 1
+	let mut s = C32::new(f.lane0() + f.lane2(), f.lane1() + f.lane3());
+	while i < len {
+		let av = *a.add(i);
+		*y.add(i) = *y.add(i) + t * av;
+		s = s + av.conj() * *x.add(i);
+		i += 1;
+	}
+	s
+}

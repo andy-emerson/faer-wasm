@@ -30,6 +30,12 @@ pub mod zher2k;
 pub mod zherk;
 pub mod ztrmm;
 pub mod ztrsm;
+pub mod cgemm;
+pub mod chemm;
+pub mod cher2k;
+pub mod cherk;
+pub mod ctrmm;
+pub mod ctrsm;
 
 pub use dgemm::{dgemm, dgemm_col4, dgemm_colaxpy, dgemm_tiled};
 pub use dsymm::{dsymm_left, dsymm_right};
@@ -49,6 +55,12 @@ pub use zher2k::zher2k;
 pub use zherk::zherk;
 pub use ztrmm::{ztrmm_left, ztrmm_right};
 pub use ztrsm::{ztrsm_left, ztrsm_right};
+pub use cgemm::{cgemm, cgemm_colaxpy};
+pub use chemm::{chemm_left, chemm_right};
+pub use cher2k::cher2k;
+pub use cherk::cherk;
+pub use ctrmm::{ctrmm_left, ctrmm_right};
+pub use ctrsm::{ctrsm_left, ctrsm_right};
 
 pub(crate) use super::L2::check_mat;
 
@@ -90,6 +102,27 @@ pub(crate) fn zher_at(
 	use crate::c64::C64;
 	if i == j {
 		return C64::new(a[j * cs + j].re, 0.0);
+	}
+	let stored = if upper { i < j } else { i > j };
+	if stored {
+		a[j * cs + i]
+	} else {
+		a[i * cs + j].conj()
+	}
+}
+
+/// c32 twin of `zher_at`.
+#[inline]
+pub(crate) fn cher_at(
+	a: &[crate::c32::C32],
+	cs: usize,
+	upper: bool,
+	i: usize,
+	j: usize,
+) -> crate::c32::C32 {
+	use crate::c32::C32;
+	if i == j {
+		return C32::new(a[j * cs + j].re, 0.0);
 	}
 	let stored = if upper { i < j } else { i > j };
 	if stored {

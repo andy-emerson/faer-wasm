@@ -38,3 +38,16 @@ mod zdscal;
 mod zrotg;
 mod zscal;
 mod zswap;
+
+mod caxpy;
+mod ccopy;
+mod cdotc;
+mod cdotu;
+mod crotg;
+mod cscal;
+mod csrot;
+mod csscal;
+mod cswap;
+mod icamax;
+mod scasum;
+mod scnrm2;

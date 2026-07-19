@@ -28,3 +28,12 @@ mod zher;
 mod zher2;
 mod ztrmv;
 mod ztrsv;
+
+mod cgemv;
+mod cgerc;
+mod cgeru;
+mod chemv;
+mod cher;
+mod cher2;
+mod ctrmv;
+mod ctrsv;

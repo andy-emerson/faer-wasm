@@ -23,15 +23,18 @@ const e = instance.exports;
 // --f32 anywhere in argv: score the f32 layer (same recipes, *_f32
 // exports, 4-byte elements; the bandwidth ceiling is bytes-agnostic).
 const F32 = process.argv.includes('--f32');
-// --c64: score the c64 layer (*_z exports; a complex multiply-add is
-// 8 real FLOPs, so the FLOP counts scale 4x; the arithmetic ceiling
-// is the f64 probe - complex arithmetic IS f64 arithmetic).
+// --c64 / --c32: score a complex layer (*_z / *_c exports; a complex
+// multiply-add is 4x the real FLOPs, so the FLOP counts scale 4x; the
+// ceiling is the same-precision REAL flops probe - complex arithmetic
+// IS f64/f32 arithmetic).
 const C64F = process.argv.includes('--c64');
-const sfx = C64F ? '_z' : F32 ? '_f32' : '';
+const C32F = process.argv.includes('--c32');
+const CPLX = C64F || C32F;
+const sfx = C64F ? '_z' : C32F ? '_c' : F32 ? '_f32' : '';
 const EB = C64F ? 16 : F32 ? 4 : 8;
 
 // ---- determinism probes first
-const probeNames = C64F ? [
+const probeNames = CPLX ? [
 	'gemm',
 	'hemm_left',
 	'herk',
@@ -75,11 +78,11 @@ if (bitsFile) {
 
 // ---- arithmetic ceiling (register-resident, same run)
 e.setup(64); // any state works for the flops probe
-const ceilSfx = F32 ? '_f32' : ''; // c64 scores against the f64 peak
+const ceilSfx = F32 || C32F ? '_f32' : ''; // complex scores against its real peak
 {
 	e['run_ceiling_flops' + ceilSfx](1000); // compile warm
 }
-const LANES = F32 ? 4 : 2;
+const LANES = F32 || C32F ? 4 : 2;
 const flopsOnce = (iters) => {
 	const t0 = performance.now();
 	const s = e['run_ceiling_flops' + ceilSfx](iters);
@@ -94,7 +97,7 @@ console.log(`\narithmetic peak (register-resident, same run): ${peak.toFixed(1)}
 const N = 512;
 e.setup(N);
 // op index -> [name, FLOPs per call]
-const OPS = C64F ? [
+const OPS = CPLX ? [
 	['gemm', 8 * N * N * N],
 	['hemm_left', 8 * N * N * N],
 	['herk', 4 * N * N * (N + 1)],

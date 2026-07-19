@@ -35,6 +35,14 @@ pub mod zher;
 pub mod zher2;
 pub mod ztrmv;
 pub mod ztrsv;
+pub mod cgemv;
+pub mod cgerc;
+pub mod cgeru;
+pub mod chemv;
+pub mod cher;
+pub mod cher2;
+pub mod ctrmv;
+pub mod ctrsv;
 
 pub use dgemv::{dgemv, dgemv_t};
 pub use dger::dger;
@@ -58,6 +66,14 @@ pub use zher::zher;
 pub use zher2::zher2;
 pub use ztrmv::ztrmv;
 pub use ztrsv::ztrsv;
+pub use cgemv::{cgemv, cgemv_c, cgemv_t};
+pub use cgerc::cgerc;
+pub use cgeru::cgeru;
+pub use chemv::chemv;
+pub use cher::cher;
+pub use cher2::cher2;
+pub use ctrmv::ctrmv;
+pub use ctrsv::ctrsv;
 
 /// Shared entry checks: the storage really contains an nrows×ncols
 /// matrix at stride cs.
@@ -114,5 +130,27 @@ pub(crate) fn zdscale_y(beta: f64, y: &mut [crate::c64::C64]) {
 		y.fill(C64::ZERO);
 	} else if beta != 1.0 {
 		crate::L1::zdscal(beta, y);
+	}
+}
+
+/// c32 twin of `zscale_y` (complex β; β=0 is a hard zero-fill).
+#[inline]
+pub(crate) fn cscale_y(beta: crate::c32::C32, y: &mut [crate::c32::C32]) {
+	use crate::c32::C32;
+	if beta == C32::ZERO {
+		y.fill(C32::ZERO);
+	} else if beta != C32::ONE {
+		crate::L1::cscal(beta, y);
+	}
+}
+
+/// c32 twin of `zdscale_y` (real β).
+#[inline]
+pub(crate) fn csscale_y(beta: f32, y: &mut [crate::c32::C32]) {
+	use crate::c32::C32;
+	if beta == 0.0 {
+		y.fill(C32::ZERO);
+	} else if beta != 1.0 {
+		crate::L1::csscal(beta, y);
 	}
 }

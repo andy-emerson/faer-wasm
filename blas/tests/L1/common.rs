@@ -145,3 +145,62 @@ pub fn bits_eq_c(a: C64, b: C64) -> bool {
 pub fn comp_scale_c(it: impl Iterator<Item = C64>) -> f64 {
 	comp_sum(it.map(|v| v.re.abs() + v.im.abs()))
 }
+
+// ---- c32 helpers ----
+use faer_wasm_blas::C32;
+
+impl Lcg {
+	/// re then im from the same integer stream, in f32
+	pub fn next_c32(&mut self) -> C32 {
+		let re = self.next_f32();
+		let im = self.next_f32();
+		C32::new(re, im)
+	}
+	pub fn vec_c32(&mut self, n: usize) -> Vec<C32> {
+		(0..n).map(|_| self.next_c32()).collect()
+	}
+	pub fn mat_c32(&mut self, nrows: usize, ncols: usize, cs: usize) -> Vec<C32> {
+		assert!(cs >= nrows);
+		let nan = C32::new(f32::NAN, f32::NAN);
+		let mut a = vec![nan; if ncols == 0 { 0 } else { cs * (ncols - 1) + nrows }];
+		for j in 0..ncols {
+			for i in 0..nrows {
+				a[j * cs + i] = self.next_c32();
+			}
+		}
+		a
+	}
+}
+
+/// Up-convert a C32 to C64 for f64 reference arithmetic.
+pub fn c_up(v: C32) -> C64 {
+	C64::new(v.re as f64, v.im as f64)
+}
+
+/// C32 items (products formed in f32, as the implementation forms
+/// them) accumulated exactly in f64 per component — the
+/// higher-precision reference for the c32 bounds (the complex analog
+/// of `comp_sum32`).
+pub fn comp_sum_cc(it: impl Iterator<Item = C32>) -> C64 {
+	let (mut sr, mut si) = (0.0f64, 0.0f64);
+	for v in it {
+		sr += v.re as f64;
+		si += v.im as f64;
+	}
+	C64::new(sr, si)
+}
+
+/// Exact bit agreement for c32 values (both components).
+pub fn bits_eq_cc(a: C32, b: C32) -> bool {
+	a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits()
+}
+
+/// Σ|z|₁ of the f32 items, accumulated in f64 — the scale term for
+/// c32 tolerances.
+pub fn comp_scale_cc(it: impl Iterator<Item = C32>) -> f64 {
+	let mut s = 0.0f64;
+	for v in it {
+		s += (v.re.abs() + v.im.abs()) as f64;
+	}
+	s
+}

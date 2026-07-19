@@ -284,6 +284,39 @@ mod imp32 {
 		pub unsafe fn lane3(self) -> f32 {
 			f32x4_extract_lane::<3>(self.0)
 		}
+		// ---- pair-wise rearrangement/sign ops (the c32 layer packs
+		// two complexes per register as [re0, im0, re1, im1]; these
+		// are generic lane ops, no complex semantics here) ----
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn quad(a: f32, b: f32, c: f32, d: f32) -> Self {
+			Self(f32x4(a, b, c, d))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn swap_pairs(self) -> Self {
+			Self(i32x4_shuffle::<1, 0, 3, 2>(self.0, self.0))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn dup_even(self) -> Self {
+			Self(i32x4_shuffle::<0, 0, 2, 2>(self.0, self.0))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn dup_odd(self) -> Self {
+			Self(i32x4_shuffle::<1, 1, 3, 3>(self.0, self.0))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn neg_even(self) -> Self {
+			Self(v128_xor(self.0, f32x4(-0.0, 0.0, -0.0, 0.0)))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn neg_odd(self) -> Self {
+			Self(v128_xor(self.0, f32x4(0.0, -0.0, 0.0, -0.0)))
+		}
 	}
 }
 
@@ -361,6 +394,32 @@ mod imp32 {
 		#[inline(always)]
 		pub unsafe fn lane3(self) -> f32 {
 			self.0[3]
+		}
+		// ---- pair-wise rearrangement/sign ops (exact — moves and
+		// sign flips only, so emulation is trivially bit-identical) ----
+		#[inline(always)]
+		pub unsafe fn quad(a: f32, b: f32, c: f32, d: f32) -> Self {
+			Self([a, b, c, d])
+		}
+		#[inline(always)]
+		pub unsafe fn swap_pairs(self) -> Self {
+			Self([self.0[1], self.0[0], self.0[3], self.0[2]])
+		}
+		#[inline(always)]
+		pub unsafe fn dup_even(self) -> Self {
+			Self([self.0[0], self.0[0], self.0[2], self.0[2]])
+		}
+		#[inline(always)]
+		pub unsafe fn dup_odd(self) -> Self {
+			Self([self.0[1], self.0[1], self.0[3], self.0[3]])
+		}
+		#[inline(always)]
+		pub unsafe fn neg_even(self) -> Self {
+			Self([-self.0[0], self.0[1], -self.0[2], self.0[3]])
+		}
+		#[inline(always)]
+		pub unsafe fn neg_odd(self) -> Self {
+			Self([self.0[0], -self.0[1], self.0[2], -self.0[3]])
 		}
 	}
 }

@@ -24,14 +24,16 @@ const e = instance.exports;
 // --f32 anywhere in argv: score the f32 layer (same recipes, *_f32
 // exports, 4-byte elements; the bandwidth ceiling is bytes-agnostic).
 const F32 = process.argv.includes('--f32');
-// --c64: score the c64 layer (*_z exports, 16-byte elements; gemv
+// --c64 / --c32: score a complex layer (*_z / *_c exports; gemv
 // gains the conjugate-transpose row, ger splits u/c, symv -> hemv).
 const C64F = process.argv.includes('--c64');
-const sfx = C64F ? '_z' : F32 ? '_f32' : '';
+const C32F = process.argv.includes('--c32');
+const CPLX = C64F || C32F;
+const sfx = C64F ? '_z' : C32F ? '_c' : F32 ? '_f32' : '';
 const EB = C64F ? 16 : F32 ? 4 : 8;
 
 // ---- determinism probes first
-const probeNames = C64F
+const probeNames = CPLX
 	? ['gemv', 'gemv_t', 'gemv_c', 'geru', 'gerc', 'hemv', 'trmv', 'trsv', 'her', 'her2']
 	: ['gemv', 'gemv_t', 'ger', 'symv', 'trmv', 'trsv', 'syr', 'syr2'];
 const wasmBits = probeNames.map((_, op) => {
@@ -62,7 +64,7 @@ e.setup(N);
 // op index -> [name, bytes moved per call]
 // gemv/gemv_t read all of A (8n²); symmetric/triangular ops touch half
 // the matrix (4n² read; +4n² write-back for the rank updates).
-const OPS = C64F ? [
+const OPS = CPLX ? [
 	['gemv', EB * N * N],
 	['gemv_t', EB * N * N],
 	['gemv_c', EB * N * N],

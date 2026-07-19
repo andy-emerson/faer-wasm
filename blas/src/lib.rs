@@ -9,10 +9,12 @@
 //! record: README.md in the crate root.
 #![no_std]
 
+mod c32;
 mod c64;
 mod kernels;
 mod lanes;
 
+pub use c32::C32;
 pub use c64::C64;
 
 // Module names match the folder and table spelling (BLAS "Level 1"

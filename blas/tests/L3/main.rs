@@ -24,3 +24,10 @@ mod zher2k;
 mod zherk;
 mod ztrmm;
 mod ztrsm;
+
+mod cgemm;
+mod chemm;
+mod cher2k;
+mod cherk;
+mod ctrmm;
+mod ctrsm;
