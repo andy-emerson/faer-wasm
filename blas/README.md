@@ -37,14 +37,21 @@ plain-English record in `../STATUS.md`, evidence per step in
   one-for-one at double lane width; two measured deviations (8×4
   gemm tile, 3 MB dispatch threshold — runner-raced, container
   overruled); same ceiling fractions as f64.
-- **c64** (built 2026-07-19, docs step 11): the first
-  non-mechanical clone — own `C64` scalar, sign-folded lane product
-  bit-exact to the scalar order, six L1 delegations onto the tuned
-  d-streams; L3 at 74–86% of the f64 arithmetic peak (complex is
-  compute-bound at 4× FLOPs/byte).
-- **c32** (built 2026-07-19, docs step 12): c64 at two-complexes-
-  per-register lane geometry; L3 at 75–87% of the f32 peak — cgemm
-  ~26 GFLOP/s, the fastest absolute row in the library.
+- **c64** (built 2026-07-19, docs step 11; tuned at the close-out,
+  step 13): the first non-mechanical clone — own `C64` scalar,
+  sign-folded lane product bit-exact to the scalar order, six L1
+  delegations onto the tuned d-streams; L3 at 74–86% of the f64
+  arithmetic peak (complex is compute-bound at 4× FLOPs/byte). The
+  4-column grouped fused zhemv won its race (~13%, both draws) and
+  ships; hemm_left rode it from 39–41% to 54–61% of peak. Market:
+  zgemm beats faer's blocked complex gemm 1.49–1.71× at n≥256.
+- **c32** (built 2026-07-19, docs step 12; close-out race step 13):
+  c64 at two-complexes-per-register lane geometry; L3 at 75–87% of
+  the f32 peak — cgemm ~26 GFLOP/s, the fastest absolute row in the
+  library, and 3.1–3.7× over faer's blocked complex gemm at every
+  size. The hemv grouping LOST for c32 (~2%, both draws — refuted,
+  recorded in `src/L2/chemv.rs`); chemv keeps the single-column
+  pass.
 
 Sequencing (Andy, 2026-07-18, revised same day; ROADMAP "BLAS
 campaign sequencing"): f64 tuned first — DONE; the tuned layer
@@ -55,8 +62,9 @@ unblocked.
 
 Gaps: FMA variants deferred (above); transpose forms of
 gemm/trmv/trsv/trmm/trsm not built (no consumer yet, any type);
-complex tuning levers recorded but not raced (register-tile
-zgemm/cgemm, 4-column fused zhemv/chemv, the i*amax rescans); the
+remaining recorded-not-raced levers — register-tile zgemm/cgemm (a
+design, and gemm already runs 74–94% of peak in complex, so the
+headroom is thin) and the i*amax rescans (worst: isamax 8%); the
 complex-symmetric symm/syrk/syr2k forms and the complex-s rotation
 apply (`zrot`) not built (no consumer); the `cd blas && cargo test`
 CI gate line still needs adding to the workflow (session tokens

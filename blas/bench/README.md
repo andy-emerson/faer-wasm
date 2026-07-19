@@ -53,16 +53,21 @@ per-element scalar rescan — recorded lever).
 | gemv | 57–64% | 59–64% | 50–56% | 60–63% |
 | gemv_t (complex: also gemv_c) | 43–52% | 66–68% | 39–42% / 39–42% | 39–40% / 38–41% |
 | ger (complex: geru / gerc) | 79–90% | 100% | 65–70% / 65–70% | 88–91% / 91–92% |
-| symv (complex: hemv) | 53–54% | 48% | 19–21% | 12% |
+| symv (complex: hemv) | 53–54% | 48% | 16–21% ¹ | 12% |
 | trmv | 60–66% | 54–59% | 47–52% | 60–65% |
 | trsv | 59–65% | 53–57% | 47–53% | 54–56% |
 | syr (complex: her) | 100% | 87–90% | 60–64% | 85–93% |
 | syr2 (complex: her2) | 50–51% | 45–46% | 32–35% | 47–49% |
 
-The weak complex row is honest and expected: hemv ships the
-single-column fused pass — the 4-column grouping that pushed dsymv
-to ~2× is a recorded lever, not yet built for complex — and its
-19–21% (c64) / 12% (c32) marks exactly where that lever would land.
+¹ zhemv ships the 4-column grouped fused pass since the close-out
+race (2026-07-19): ~13% faster in ms than the single-column shape on
+both draws (runs 29705606221/29705603966); the refreshed % range
+spans one normal-class and one slow-class machine draw. The SAME
+grouping LOST for c32 (~2% slower, both draws — container overruled
+again), so chemv keeps the single-column pass; its 12% marks the
+c32 hemv gap honestly — at two complexes per register the extra
+blend work costs more than the saved traffic. The remaining recorded
+levers here are the i*amax rescans.
 
 ### Level 3 (n = 512, % of same-run arithmetic peak)
 
@@ -74,7 +79,7 @@ arithmetic; a complex multiply-add counts 8 real FLOPs).
 | routine | f64 | f32 | c64 | c32 |
 |---|---|---|---|---|
 | gemm | 53–56% | 55–57% | 74–79% | 85% |
-| symm_left (complex: hemm_left) | 84–86% | 79–82% | 39–41% | 55–56% |
+| symm_left (complex: hemm_left) | 84–86% | 79–82% | 54–61% ² | 55–56% |
 | syrk (complex: herk) | 49–52% | 50–52% | 76–81% | 76–77% |
 | syr2k (complex: her2k) | 49–51% | 48–51% | 74–78% | 75% |
 | trmm_left | 46–48% | 50% | 81–86% | 76% |
@@ -82,20 +87,27 @@ arithmetic; a complex multiply-add counts 8 real FLOPs).
 | trmm_right | 53–55% | 54–58% | 77–85% | 86% |
 | trsm_right | 53–55% | 54–57% | 77–85% | 86–87% |
 
+² refreshed after the zhemv grouping shipped (runs
+29705911344/29705909050) — hemm_left rides zhemv and moved from
+39–41% to 54–61%.
+
 The complex families sit far closer to the arithmetic ceiling than
 the real layers (74–87% vs 46–56%) — complex arithmetic does 4× the
 FLOPs per byte moved, so the same fan-out shapes shift from
 memory-limited toward compute-bound, and gemm gets there without a
 register tile in either type (cgemm's 85% of the ~30.5 GFLOP/s f32
 peak ≈ 25.9 GFLOP/s is the fastest absolute row on the board). The
-exception inverts for the same reason: hemm_left rides hemv's
-un-grouped fused pass (the Level-2 lever above), which is why it
-reads 39–56% where symm_left reads 79–86%.
+remaining below-family rows are the hemm_lefts, riding their hemv
+kernels (see the Level-2 note).
 
-Market comparison (not the metric): dgemm beats faer's blocked gemm
-at every measured size, 1.25–1.8×, two draws (docs step 6; that race
-lives in `../../bench/gemm-tune-ab.mjs`, which needs faer and loads
-this crate's wasm alongside the faer harness's).
+Market comparison (not the metric): the layer's gemm beats faer's
+blocked gemm in every type raced, two draws each. dgemm 1.25–1.8× at
+every measured size (docs step 6, `../../bench/gemm-tune-ab.mjs`);
+zgemm 1.49–1.71× at n=256–768 on both draws (n=128 split across
+draws: 1.70×/0.96× — call it a tie at the smallest size); cgemm
+3.11–3.67× at every size including 128, unanimous (docs step 13,
+`../../bench/cplx-gemm-ab.mjs` — conservative against us: the blas
+rows do the full αAB+βC blend where faer's row is a plain replace).
 
 ## Running a roofline (per level, per type)
 

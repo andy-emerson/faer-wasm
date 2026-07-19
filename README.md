@@ -91,9 +91,10 @@ ROADMAP "Re-derived goals".
   wins — current tables live in `docs/research-eig-wasm-2026-07.md`.
 - `blas/` — **`faer-wasm-blas`**, the wasm-native BLAS layer (the
   foundation the LAPACK-layer kernels re-route onto): one file per
-  routine per type in netlib naming, f64 + f32 complete and tuned,
-  self-measuring (`blas/bench/`, scoreboard in its README),
-  plan of record in `blas/README.md`.
+  routine per type in netlib naming, all four number types
+  (f64/f32/c64/c32) built, tested, and runner-scored — 98 routines,
+  144 tests, 90 cross-target probes; self-measuring (`blas/bench/`,
+  scoreboard in its README), plan of record in `blas/README.md`.
 - `bench/` + `docs/benchmarks-2026-07.md` — the wasm-vs-native benchmark
   harness (f64 + c64 ops) and its first published numbers (opt-level
   ~1.75×, relaxed-SIMD ~11%, large matmul at 1.8–1.9× native, mid-size
@@ -192,6 +193,8 @@ their evidence.
 | c64 rooflines on runners (2 draws): L3 family 74–86% of the f64 arithmetic peak (complex = 4× FLOPs/byte, so the fan-out shapes run compute-bound; zgemm 74–79% with no register tile); L1 delegations at 97–100% of ceiling (zswap/zdrot ARE the tuned d-streams); weak rows recorded — un-grouped fused zhemv 19–21%, hemm_left riding it 39–41% (the 4-column fused grouping is the recorded lever) | observed | scripted | `blas/bench/l{1,2,3}-roofline.mjs --c64`, runs 29703517659/29703515446; docs step 11 |
 | BLAS c32 layer (the c-routines, completing the four-type grid): the c64 layer at two-complexes-per-F32x4 lane geometry (pair shuffles, one-complex scalar tails — same sign-folding bit-exactness proof); 26 routines / 31 operations, 40 new tests (144 crate-wide) incl. all replay/conjugation/Hermitian checks; 24 probes bit-identical native ↔ wasm on container + both runner draws | tested | scripted | `blas/tests/L{1,2,3}/` c-files; `run_l{1,2,3}_probe_c` vs `native l{1,2,3}-bits-c` |
 | c32 rooflines on runners (2 draws): L3 family 75–87% of the f32 arithmetic peak (~30.5 GFLOP/s); cgemm 85% ≈ 26 GFLOP/s — the fastest absolute row in the library, no register tile; delegations swap/rot/dscal 86–100% of stream ceiling; weak rows mirror c64's recorded lever (chemv 12%, hemm_left 55–56%) plus icamax 13–16% (the isamax rescan weakness) | observed | scripted | `blas/bench/l{1,2,3}-roofline.mjs --c32`, runs 29704861353/29704858030; docs step 12 |
+| hemv grouping race, split verdict both draws unanimous: Wins c64 ~9–13% (zhemv ships grouped; hemm_left 39–41% → 54–61% of peak on the refresh pair) — LOSES c32 ~2% (chemv keeps single-column, loss recorded in its module doc; third container-vs-runner reversal). Probe patterns unchanged (reorder sub-ULP under the folds); all z probes bit-identical on every draw | observed | scripted | runs 29705606221/29705603966 (race) + 29705911344/29705909050 (refresh); docs step 13 |
+| complex gemm market race, both draws: zgemm beats faer's blocked complex gemm 1.49–1.71× at n=256–768 (n=128 split — tie at the smallest size); cgemm 3.11–3.67× at every size unanimously; conservative protocol (our rows do full αAB+βC where faer's row is a replace) | observed | scripted | `bench/cplx-gemm-ab.mjs`, runs 29705606221/29705603966; docs step 13 |
 | post-allocator-fix scoreboard (the new reference): real schur_k WINS 1.24×/1.67×/1.08×/1.10× at n=64–512 (0.99× at 1024), eigvals_k3 WINS at all five sizes incl. 512/1024 (1.52×/1.51×) — pre-fix 512/1024 losses and the eigvals 512-parity were leak-allocator tax on our side (scipy unaffected; its times moved <5% between runs while ours dropped 1.6–1.8×) | observed | scripted | runs 29146566266 (pre) vs 29157035070 (post), same protocol |
 | faer's c64 matmul allocates per-call temporaries via GlobalAlloc (one n=600 c64 multishift: 15.4 GB cumulative, ~25K allocations, peak live ~19 MB) — fatal on leak-only bump allocators; LIFO-rewind shim fixes it (probe values bit-identical) | tested | CI-enforced | `kernels/tests/alloc_probe.rs` peak-live guard + wasm gate on the new shims |
 

@@ -88,22 +88,41 @@ re-derivation of the project goals. The decisions, in plain terms:
   and the layer has its home: the `blas/` crate — one folder per
   BLAS level, one file per routine per number type in classic BLAS
   naming (daxpy/saxpy/…), the plan tables in its README.
-- **The f32 BLAS layer is built** (2026-07-19): the tuned f64 layer
-  cloned function-for-function into single precision — same loops,
-  same tests, same identical-bits-everywhere guarantee (checked on
-  both CI machines). Single precision packs four numbers per SIMD
-  register instead of two, and it delivered: the machine's f32
-  arithmetic limit measures ~1.8× its f64 limit, and our
-  matrix–matrix functions hold the same fraction of that higher
-  limit (48–58%, symmetric multiply 79–82%) — the tuned loop shapes
-  transferred without re-tuning. Two small deliberate differences,
-  both settled by racing on the CI machines: a taller multiply tile,
-  and a different matrix-size threshold for switching multiply
-  strategies (the dev container disagreed with the CI machines on
-  where — the CI machines won, per the standing rule). One honest
-  weak spot recorded: f32 find-largest-element sits at ~8% of the
-  memory limit because its element-by-element index scan doesn't get
-  faster with narrower numbers — a known lever for a later pass.
+- **BLAS close-out done** (2026-07-19, Andy's checklist): code and
+  documentation swept (a dead field in the benchmark harness, stale
+  "two types" comments from a campaign ago, wrong cross-references —
+  all fixed), the documentation reorganized as agreed (one navigation
+  document, one correctness document, a much shorter front page). The
+  last recorded speed lever was properly raced on the CI machines
+  with a split verdict: grouping the Hermitian multiply-vector
+  columns is ~13% faster for complex-double (now shipped — the
+  matrix-matrix op riding it jumped from ~40% to 54–61% of the
+  machine's limit) but ~2% SLOWER for complex-single (kept out; the
+  dev container predicted the opposite and was overruled by the
+  machines that matter, for the third time). And the missing market
+  benchmark now exists: our complex matrix multiplies beat faer's by
+  1.5–1.7× (double) and 3.1–3.7× (single) on both CI machines.
+  What remains in the layer is recorded and deliberate: two low-value
+  levers (complex register tiles, the find-largest-element rescans)
+  and consumer-driven gaps — not unfinished work.
+- **The c32 BLAS layer is built — the four-type grid is complete**
+  (2026-07-19): the complex single-precision routines, cloned from
+  the complex double layer with one real change — each SIMD register
+  now carries two complex numbers instead of one, so the shuffle
+  patterns work in pairs and odd-length vectors get a one-element
+  tail (provably identical arithmetic, same as everywhere else). 40
+  new tests (144 total, all green), all 24 new cross-target checks
+  bit-identical on the container and both CI machines. The headline:
+  complex-single matrix–matrix runs at **75–87% of the machine's
+  f32 arithmetic limit**, and its matrix multiply — at 85% of a
+  ~30.5 GFLOP/s ceiling — is the fastest operation in absolute terms
+  in the entire library, without the register-tile trick the real
+  types needed. Same known weak spot as complex-double (the fused
+  Hermitian multiply-vector grouping, a recorded lever). With all
+  four number types built, tested, and speed-scored, the BLAS layer's
+  planned coverage is COMPLETE — remaining work in it is measured
+  tuning, not construction — and the plan's next stage (re-routing
+  the LAPACK-layer kernels onto our own BLAS) is unblocked.
 - **The c64 BLAS layer is built** (2026-07-19): the complex
   double-precision routines — the first clone that took real design
   work rather than a find-and-replace, because complex arithmetic
@@ -125,26 +144,25 @@ re-derivation of the project goals. The decisions, in plain terms:
   tied to one recorded lever (the fused symmetric-multiply grouping
   wasn't ported yet): the Hermitian matrix×vector at ~20% and the
   matrix–matrix op built on it at ~40%. Not built (nothing needs
-  them yet): the complex-symmetric (non-Hermitian) variants, the
-  complex-sine rotation apply, and all of c32.
-- **The c32 BLAS layer is built — the four-type grid is complete**
-  (2026-07-19): the complex single-precision routines, cloned from
-  the complex double layer with one real change — each SIMD register
-  now carries two complex numbers instead of one, so the shuffle
-  patterns work in pairs and odd-length vectors get a one-element
-  tail (provably identical arithmetic, same as everywhere else). 40
-  new tests (144 total, all green), all 24 new cross-target checks
-  bit-identical on the container and both CI machines. The headline:
-  complex-single matrix–matrix runs at **75–87% of the machine's
-  f32 arithmetic limit**, and its matrix multiply — at 85% of a
-  ~30.5 GFLOP/s ceiling — is the fastest operation in absolute terms
-  in the entire library, without the register-tile trick the real
-  types needed. Same known weak spot as complex-double (the fused
-  Hermitian multiply-vector grouping, a recorded lever). With all
-  four number types built, tested, and speed-scored, the BLAS layer's
-  planned coverage is COMPLETE — remaining work in it is measured
-  tuning, not construction — and the plan's next stage (re-routing
-  the LAPACK-layer kernels onto our own BLAS) is unblocked.
+  them yet): the complex-symmetric (non-Hermitian) variants and the
+  complex-sine rotation apply. (c32 and the weak-row lever were both
+  handled the same day — see the two entries above.)
+- **The f32 BLAS layer is built** (2026-07-19): the tuned f64 layer
+  cloned function-for-function into single precision — same loops,
+  same tests, same identical-bits-everywhere guarantee (checked on
+  both CI machines). Single precision packs four numbers per SIMD
+  register instead of two, and it delivered: the machine's f32
+  arithmetic limit measures ~1.8× its f64 limit, and our
+  matrix–matrix functions hold the same fraction of that higher
+  limit (48–58%, symmetric multiply 79–82%) — the tuned loop shapes
+  transferred without re-tuning. Two small deliberate differences,
+  both settled by racing on the CI machines: a taller multiply tile,
+  and a different matrix-size threshold for switching multiply
+  strategies (the dev container disagreed with the CI machines on
+  where — the CI machines won, per the standing rule). One honest
+  weak spot recorded: f32 find-largest-element sits at ~8% of the
+  memory limit because its element-by-element index scan doesn't get
+  faster with narrower numbers — a known lever for a later pass.
 - **The f64 tuning pass is DONE — campaign closed 2026-07-19**:
   before cloning the layer into the other number types, the f64
   loops were made fast (Andy's revised sequencing — the clones

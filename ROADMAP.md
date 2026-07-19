@@ -86,7 +86,19 @@ clones inherit tuned shapes for free instead of re-tuning ×3):
    + both draws; L3 at 75–87% of the f32 arithmetic peak — cgemm 85%
    of ~30.5 GFLOP/s, the fastest absolute row on the board; same
    recorded levers (chemv fused grouping — 12% without it; icamax
-   rescan 13–16%). THE FOUR-TYPE GRID IS COMPLETE;
+   rescan 13–16%). THE FOUR-TYPE GRID IS COMPLETE.
+   Close-out (2026-07-19, Andy's four-question checklist — docs step
+   13): code sweep (clippy clean; dead harness field removed), doc/
+   comment staleness sweep, organization consolidation (naming →
+   src/README, contract → tests/README, blas/README dieted). The
+   hemv grouping lever RACED with a split verdict — WON for c64
+   (~13%, ships; hemm_left 39–41% → 54–61% of peak) and REFUTED for
+   c32 (~2% slower both draws; recorded in chemv.rs — third
+   container-vs-runner reversal). Market races completed for the
+   complex types: zgemm 1.49–1.71× over faer's blocked gemm (n≥256,
+   both draws; tie at 128), cgemm 3.11–3.67× unanimous. Remaining
+   levers recorded, not chased: complex register tiles (thin
+   headroom at 74–94% of peak), i*amax rescans;
 4. **only then** does any LAPACK-layer work resume (the kernel
    re-route onto the layer included) — UNBLOCKED as of 2026-07-19:
    all four number types are built, tested, probed, and
