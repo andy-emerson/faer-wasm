@@ -347,7 +347,14 @@ fn gemm_tiled_bit_identical_to_gemm() {
 		let c0 = rng.mat(m, n, ccs);
 		for (alpha, beta) in [(1.0, 0.0), (-0.7, 0.4), (0.3, 1.0)] {
 			let mut c1 = c0.clone();
-			gemm(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c1, ccs);
+			gemm_colaxpy(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c1, ccs);
+			let mut cd = c0.clone();
+			gemm(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut cd, ccs);
+			for j in 0..n {
+				for i in 0..m {
+					assert_eq!(c1[j * ccs + i].to_bits(), cd[j * ccs + i].to_bits(), "dispatcher vs colaxpy");
+				}
+			}
 			let mut c2 = c0.clone();
 			gemm_tiled(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c2, ccs);
 			let mut c3 = c0.clone();

@@ -1,17 +1,53 @@
 //! `gemm` — matrix multiplication: C ← αAB + βC.
 //!
-//! Implementation: column-axpy — gemm is exactly `gemv` per column of
-//! B/C. This flat streaming shape beat faer's blocked gemm 1.07–1.33×
-//! through n = 512 on the reference machines (docs/blas-ab-2026-07.md).
-//! Transpose forms: not built — no consumer yet (syrk covers A·Aᵀ).
+//! Implementation: size-dispatched column-axpy family (tuned
+//! 2026-07-18): 4×4 register tile below ~1.5 MB of A, 4-column fused
+//! stream above — all bit-identical to the plain gemv-per-column
+//! reference, which is kept as `gemm_colaxpy`. Both tuned shapes beat
+//! faer's blocked gemm at every measured size (1.4–1.8× small, ~1.25×
+//! large; docs/blas-ab-2026-07.md step 6). Transpose forms: not built
+//! — no consumer yet (syrk covers A·Aᵀ).
 
 use super::check_mat;
 use crate::level2::gemv;
 
 /// C ← αAB + βC. A is m×k, B is k×n, C is m×n; each matrix has its own
 /// column stride.
+///
+/// Dispatches by size (tuning campaign, 2026-07-18, two runner draws
+/// agreeing within 3%): the 4×4 register tile wins while A stays small
+/// enough that its column-strided k-walk rides the caches (best
+/// 128–384, 1.4–1.8× over faer); the 4-column fused stream wins above
+/// (512+, ~1.25× over faer). All three shapes are bit-for-bit
+/// identical, so the dispatch is invisible to results.
 #[allow(clippy::too_many_arguments)]
 pub fn gemm(
+	alpha: f64,
+	m: usize,
+	k: usize,
+	n: usize,
+	a: &[f64],
+	acs: usize,
+	b: &[f64],
+	bcs: usize,
+	beta: f64,
+	c: &mut [f64],
+	ccs: usize,
+) {
+	// measured crossover between n=384 (A ≈ 1.2 MB: tiled) and n=512
+	// (A = 2 MB: col4) on both reference draws and the container
+	const TILED_MAX_A_BYTES: usize = 3 << 19; // 1.5 MB
+	if m * k * 8 <= TILED_MAX_A_BYTES {
+		gemm_tiled(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
+	} else {
+		gemm_col4(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
+	}
+}
+
+/// The original column-axpy shape (gemv per column) — kept as the
+/// plain reference the tuned shapes are raced and bit-checked against.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_colaxpy(
 	alpha: f64,
 	m: usize,
 	k: usize,
