@@ -24,6 +24,12 @@ pub mod ssyr2k;
 pub mod ssyrk;
 pub mod strmm;
 pub mod strsm;
+pub mod zgemm;
+pub mod zhemm;
+pub mod zher2k;
+pub mod zherk;
+pub mod ztrmm;
+pub mod ztrsm;
 
 pub use dgemm::{dgemm, dgemm_col4, dgemm_colaxpy, dgemm_tiled};
 pub use dsymm::{dsymm_left, dsymm_right};
@@ -37,6 +43,12 @@ pub use ssyr2k::ssyr2k;
 pub use ssyrk::ssyrk;
 pub use strmm::{strmm_left, strmm_right};
 pub use strsm::{strsm_left, strsm_right};
+pub use zgemm::{zgemm, zgemm_colaxpy};
+pub use zhemm::{zhemm_left, zhemm_right};
+pub use zher2k::zher2k;
+pub use zherk::zherk;
+pub use ztrmm::{ztrmm_left, ztrmm_right};
+pub use ztrsm::{ztrsm_left, ztrsm_right};
 
 pub(crate) use super::L2::check_mat;
 
@@ -60,5 +72,29 @@ pub(crate) fn ssym_at(a: &[f32], cs: usize, upper: bool, i: usize, j: usize) -> 
 		a[j * cs + i]
 	} else {
 		a[i * cs + j]
+	}
+}
+
+/// Hermitian-triangle element lookup: A[i,j] with only one triangle
+/// stored — conjugated on the reflected side, and REAL on the
+/// diagonal (stored diagonal imaginary parts are ignored, per the
+/// LAPACK Hermitian storage convention).
+#[inline]
+pub(crate) fn zher_at(
+	a: &[crate::c64::C64],
+	cs: usize,
+	upper: bool,
+	i: usize,
+	j: usize,
+) -> crate::c64::C64 {
+	use crate::c64::C64;
+	if i == j {
+		return C64::new(a[j * cs + j].re, 0.0);
+	}
+	let stored = if upper { i < j } else { i > j };
+	if stored {
+		a[j * cs + i]
+	} else {
+		a[i * cs + j].conj()
 	}
 }

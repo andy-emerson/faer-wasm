@@ -7,8 +7,8 @@
 //
 // Lives beside the layer it measures (blas/bench). Build + run:
 //   cargo build --release --target wasm32-unknown-unknown --lib
-//   cargo run --release --bin native l3-bits[-f32] > bits.txt
-//   node l3-roofline.mjs target/wasm32-unknown-unknown/release/blas_bench.wasm bits.txt [--f32]
+//   cargo run --release --bin native l3-bits[-f32|-z] > bits.txt
+//   node l3-roofline.mjs target/wasm32-unknown-unknown/release/blas_bench.wasm bits.txt [--f32|--c64]
 import { readFileSync } from 'node:fs';
 
 const wasmPath = process.argv[2];
@@ -23,11 +23,25 @@ const e = instance.exports;
 // --f32 anywhere in argv: score the f32 layer (same recipes, *_f32
 // exports, 4-byte elements; the bandwidth ceiling is bytes-agnostic).
 const F32 = process.argv.includes('--f32');
-const sfx = F32 ? '_f32' : '';
-const EB = F32 ? 4 : 8;
+// --c64: score the c64 layer (*_z exports; a complex multiply-add is
+// 8 real FLOPs, so the FLOP counts scale 4x; the arithmetic ceiling
+// is the f64 probe - complex arithmetic IS f64 arithmetic).
+const C64F = process.argv.includes('--c64');
+const sfx = C64F ? '_z' : F32 ? '_f32' : '';
+const EB = C64F ? 16 : F32 ? 4 : 8;
 
 // ---- determinism probes first
-const probeNames = [
+const probeNames = C64F ? [
+	'gemm',
+	'hemm_left',
+	'herk',
+	'her2k',
+	'trmm_left',
+	'trsm_left',
+	'trmm_right',
+	'trsm_right',
+	'hemm_right',
+] : [
 	'gemm',
 	'symm_left',
 	'syrk',
@@ -56,18 +70,19 @@ if (bitsFile) {
 		}
 	});
 	if (!ok) process.exit(1);
-	console.log('native <-> wasm: bit-identical, all 9 probes');
+	console.log(`native <-> wasm: bit-identical, all ${probeNames.length} probes`);
 }
 
 // ---- arithmetic ceiling (register-resident, same run)
 e.setup(64); // any state works for the flops probe
+const ceilSfx = F32 ? '_f32' : ''; // c64 scores against the f64 peak
 {
-	e['run_ceiling_flops' + sfx](1000); // compile warm
+	e['run_ceiling_flops' + ceilSfx](1000); // compile warm
 }
 const LANES = F32 ? 4 : 2;
 const flopsOnce = (iters) => {
 	const t0 = performance.now();
-	const s = e['run_ceiling_flops' + sfx](iters);
+	const s = e['run_ceiling_flops' + ceilSfx](iters);
 	if (!Number.isFinite(s)) throw new Error('flops probe non-finite');
 	return (iters * 8 * LANES * 2) / ((performance.now() - t0) / 1e3) / 1e9;
 };
@@ -79,7 +94,16 @@ console.log(`\narithmetic peak (register-resident, same run): ${peak.toFixed(1)}
 const N = 512;
 e.setup(N);
 // op index -> [name, FLOPs per call]
-const OPS = [
+const OPS = C64F ? [
+	['gemm', 8 * N * N * N],
+	['hemm_left', 8 * N * N * N],
+	['herk', 4 * N * N * (N + 1)],
+	['her2k', 8 * N * N * (N + 1)],
+	['trmm_left', 4 * N * N * (N + 1)],
+	['trsm_left', 4 * N * N * (N + 1)],
+	['trmm_right', 4 * N * N * (N + 1)],
+	['trsm_right', 4 * N * N * (N + 1)],
+] : [
 	['gemm', 2 * N * N * N],
 	['symm_left', 2 * N * N * N],
 	['syrk', N * N * (N + 1)],

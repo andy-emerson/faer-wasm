@@ -1,9 +1,10 @@
 //! Level 1: vector operations, one file per BLAS routine (netlib
 //! naming — see README.md in this folder for the convention). The
-//! d-prefixed routines are f64, s-prefixed f32; i-prefixed index
-//! routines carry the type as their second letter (idamax/isamax).
-//! `drotg`/`srotg` also export their `Givens` result structs via
-//! their module paths.
+//! d-prefixed routines are f64, s-prefixed f32, z-prefixed c64;
+//! i-prefixed index routines carry the type second (idamax/izamax),
+//! and the complex routines returning reals carry both letters
+//! (dznrm2/dzasum). `drotg`/`srotg`/`zrotg` also export their Givens
+//! result structs via their module paths.
 
 pub mod dasum;
 pub mod daxpy;
@@ -25,6 +26,18 @@ pub mod srot;
 pub mod srotg;
 pub mod sscal;
 pub mod sswap;
+pub mod dzasum;
+pub mod dznrm2;
+pub mod izamax;
+pub mod zaxpy;
+pub mod zcopy;
+pub mod zdotc;
+pub mod zdotu;
+pub mod zdrot;
+pub mod zdscal;
+pub mod zrotg;
+pub mod zscal;
+pub mod zswap;
 
 pub use dasum::dasum;
 pub use daxpy::daxpy;
@@ -46,3 +59,15 @@ pub use srot::srot;
 pub use srotg::srotg;
 pub use sscal::sscal;
 pub use sswap::sswap;
+pub use dzasum::dzasum;
+pub use dznrm2::dznrm2;
+pub use izamax::izamax;
+pub use zaxpy::zaxpy;
+pub use zcopy::zcopy;
+pub use zdotc::zdotc;
+pub use zdotu::zdotu;
+pub use zdrot::zdrot;
+pub use zdscal::zdscal;
+pub use zrotg::zrotg;
+pub use zscal::zscal;
+pub use zswap::zswap;

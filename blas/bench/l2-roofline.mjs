@@ -8,8 +8,8 @@
 //
 // Lives beside the layer it measures (blas/bench). Build + run:
 //   cargo build --release --target wasm32-unknown-unknown --lib
-//   cargo run --release --bin native l2-bits[-f32] > bits.txt
-//   node l2-roofline.mjs target/wasm32-unknown-unknown/release/blas_bench.wasm bits.txt [--f32]
+//   cargo run --release --bin native l2-bits[-f32|-z] > bits.txt
+//   node l2-roofline.mjs target/wasm32-unknown-unknown/release/blas_bench.wasm bits.txt [--f32|--c64]
 import { readFileSync } from 'node:fs';
 
 const wasmPath = process.argv[2];
@@ -24,11 +24,16 @@ const e = instance.exports;
 // --f32 anywhere in argv: score the f32 layer (same recipes, *_f32
 // exports, 4-byte elements; the bandwidth ceiling is bytes-agnostic).
 const F32 = process.argv.includes('--f32');
-const sfx = F32 ? '_f32' : '';
-const EB = F32 ? 4 : 8;
+// --c64: score the c64 layer (*_z exports, 16-byte elements; gemv
+// gains the conjugate-transpose row, ger splits u/c, symv -> hemv).
+const C64F = process.argv.includes('--c64');
+const sfx = C64F ? '_z' : F32 ? '_f32' : '';
+const EB = C64F ? 16 : F32 ? 4 : 8;
 
 // ---- determinism probes first
-const probeNames = ['gemv', 'gemv_t', 'ger', 'symv', 'trmv', 'trsv', 'syr', 'syr2'];
+const probeNames = C64F
+	? ['gemv', 'gemv_t', 'gemv_c', 'geru', 'gerc', 'hemv', 'trmv', 'trsv', 'her', 'her2']
+	: ['gemv', 'gemv_t', 'ger', 'symv', 'trmv', 'trsv', 'syr', 'syr2'];
 const wasmBits = probeNames.map((_, op) => {
 	const buf = new DataView(new ArrayBuffer(8));
 	buf.setFloat64(0, e['run_l2_probe' + sfx](op));
@@ -47,7 +52,7 @@ if (bitsFile) {
 		}
 	});
 	if (!ok) process.exit(1);
-	console.log('native <-> wasm: bit-identical, all 8 probes');
+	console.log(`native <-> wasm: bit-identical, all ${probeNames.length} probes`);
 }
 
 // ---- roofline rows (n=2048: matrices stream from DRAM)
@@ -57,7 +62,18 @@ e.setup(N);
 // op index -> [name, bytes moved per call]
 // gemv/gemv_t read all of A (8n²); symmetric/triangular ops touch half
 // the matrix (4n² read; +4n² write-back for the rank updates).
-const OPS = [
+const OPS = C64F ? [
+	['gemv', EB * N * N],
+	['gemv_t', EB * N * N],
+	['gemv_c', EB * N * N],
+	['geru', 2 * EB * N * N],
+	['gerc', 2 * EB * N * N],
+	['hemv', (EB / 2) * N * N],
+	['trmv', (EB / 2) * N * N],
+	['trsv', (EB / 2) * N * N],
+	['her', EB * N * N],
+	['her2', EB * N * N],
+] : [
 	['gemv', EB * N * N],
 	['gemv_t', EB * N * N],
 	['ger', 2 * EB * N * N],

@@ -27,7 +27,15 @@ struct State {
     sym32: Vec<f32>,
     tri32: Vec<f32>,
     rhs32: Vec<f32>,
+    // c64 twins — own LCG fills (re/im interleaved draws), same roles
+    az: Vec<C64>,
+    bz: Vec<C64>,
+    symz: Vec<C64>,
+    triz: Vec<C64>,
+    rhsz: Vec<C64>,
 }
+
+use faer_wasm_blas::C64;
 
 struct StateCell(core::cell::UnsafeCell<Option<State>>);
 unsafe impl Sync for StateCell {}
@@ -108,10 +116,65 @@ pub extern "C" fn setup(n: usize) {
     let sym32: Vec<f32> = sym.iter().map(|&v| v as f32).collect();
     let tri32: Vec<f32> = tri.iter().map(|&v| v as f32).collect();
     let rhs32: Vec<f32> = rhs.iter().map(|&v| v as f32).collect();
-    unsafe {
-        *STATE.0.get() =
-            Some(State { n, a, b, sym, tri, rhs, a32, b32, sym32, tri32, rhs32 })
+    let az = fill_z(n * n, 0x1B873593CC9E2D51);
+    let bz = fill_z(n * n, 0xE6546B64B432C925);
+    let symz = bz.clone(); // sacrificial destination, like sym
+    let mut triz = az.clone();
+    for i in 0..n {
+        triz[i * n + i] = C64::new(2.0 * n as f64 + 1.0, 0.7);
     }
+    let rhsz = fill_z(n.max(1), 0x2545F4914F6CDD1D);
+    unsafe {
+        *STATE.0.get() = Some(State {
+            n,
+            a,
+            b,
+            sym,
+            tri,
+            rhs,
+            a32,
+            b32,
+            sym32,
+            tri32,
+            rhs32,
+            az,
+            bz,
+            symz,
+            triz,
+            rhsz,
+        })
+    }
+}
+
+/// Deterministic complex fill: re then im from one LCG stream.
+fn fill_z(len: usize, mut s: u64) -> Vec<C64> {
+    let mut next = move || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    (0..len)
+        .map(|_| {
+            let re = next();
+            let im = next();
+            C64::new(re, im)
+        })
+        .collect()
+}
+
+/// Column-major n×n complex fill from a probe's LCG closure (re then
+/// im per element, column-major order — probe bits depend on it).
+fn alloc_mat_c64(n: usize, next: &mut impl FnMut() -> f64) -> Vec<C64> {
+    let mut v = vec![C64::ZERO; n * n];
+    for j in 0..n {
+        for i in 0..n {
+            let re = next();
+            let im = next();
+            v[j * n + i] = C64::new(re, im);
+        }
+    }
+    v
 }
 
 #[no_mangle]
@@ -898,4 +961,330 @@ unsafe fn ceiling_flops_f32_imp(iters: usize) -> f64 {
             + f32x4_extract_lane::<3>(acc[k]);
     }
     s as f64
+}
+
+// ============================================================
+// c64 BLAS-layer rows and probes — twins of the f64 exports above
+// over the *z state fields (16-byte elements; complex constants pick
+// the same magnitudes). Extern returns stay f64; complex results are
+// folded re+im at the end.
+// ============================================================
+
+#[no_mangle]
+pub extern "C" fn run_l1_layer_z(op: usize) -> f64 {
+    use faer_wasm_blas::L1 as l1;
+    let s = state_mut();
+    let n = s.n;
+    let ap = s.az.as_mut_ptr();
+    let bp = s.bz.as_mut_ptr();
+    let col = |p: *mut C64, j: usize| unsafe { core::slice::from_raw_parts_mut(p.add(j * n), n) };
+    let mut sink = 0.0f64;
+    match op {
+        0 => {
+            for j in 0..n {
+                l1::zcopy(col(ap, j), col(bp, j));
+            }
+            sink += unsafe { (*bp).re };
+        }
+        1 => {
+            for j in 0..n {
+                l1::zswap(col(ap, j), col(bp, j));
+            }
+            sink += unsafe { (*ap).re };
+        }
+        2 => {
+            for j in 0..n {
+                l1::zscal(C64::new(-1.0, 0.0), col(ap, j));
+            }
+            sink += unsafe { (*ap).re };
+        }
+        3 => {
+            for j in 0..n {
+                l1::zdscal(-1.0, col(ap, j));
+            }
+            sink += unsafe { (*ap).re };
+        }
+        4 => {
+            for j in 0..n {
+                l1::zaxpy(C64::new(0.001, 0.0), col(ap, j), col(bp, j));
+            }
+            sink += unsafe { (*bp).re };
+        }
+        5 => {
+            for j in 0..n {
+                l1::zdrot(col(ap, j), col(bp, j), 0.8, 0.6);
+            }
+            sink += unsafe { (*ap).re };
+        }
+        6 => {
+            for j in 0..n {
+                let d = l1::zdotu(col(ap, j), col(bp, j));
+                sink += d.re + d.im;
+            }
+        }
+        7 => {
+            for j in 0..n {
+                let d = l1::zdotc(col(ap, j), col(bp, j));
+                sink += d.re + d.im;
+            }
+        }
+        8 => {
+            for j in 0..n {
+                sink += l1::dznrm2(col(ap, j));
+            }
+        }
+        9 => {
+            for j in 0..n {
+                sink += l1::dzasum(col(ap, j));
+            }
+        }
+        10 => {
+            for j in 0..n {
+                sink += l1::izamax(col(ap, j)) as f64;
+            }
+        }
+        _ => return f64::NAN,
+    }
+    sink
+}
+
+/// Level-2 c64 roofline rows. op: 0 gemv, 1 gemv_t, 2 gemv_c, 3 geru,
+/// 4 gerc, 5 hemv, 6 trmv, 7 trsv, 8 her, 9 her2. Same
+/// bounded-value discipline as the f64 rows (small alpha on
+/// accumulating updates; trmv/trsv re-copy x fresh each call).
+#[no_mangle]
+pub extern "C" fn run_l2_layer_z(op: usize) -> f64 {
+    use faer_wasm_blas::L1 as l1;
+    use faer_wasm_blas::L2 as l2;
+    let s = state_mut();
+    let n = s.n;
+    let cs = s.n;
+    let len = if n == 0 { 0 } else { cs * (n - 1) + n };
+    let a = unsafe { core::slice::from_raw_parts(s.az.as_ptr(), len) };
+    let bx = unsafe { core::slice::from_raw_parts(s.bz.as_ptr(), n) };
+    let sym = unsafe { core::slice::from_raw_parts_mut(s.symz.as_mut_ptr(), len) };
+    let tri = unsafe { core::slice::from_raw_parts(s.triz.as_ptr(), len) };
+    let y = unsafe { core::slice::from_raw_parts_mut(s.rhsz.as_mut_ptr(), n) };
+    let al = C64::new(0.001, 0.0);
+    let al4 = C64::new(0.0001, 0.0);
+    let be = C64::new(0.5, 0.0);
+    match op {
+        0 => l2::zgemv(al, n, n, a, cs, bx, be, y),
+        1 => l2::zgemv_t(al, n, n, a, cs, bx, be, y),
+        2 => l2::zgemv_c(al, n, n, a, cs, bx, be, y),
+        3 => l2::zgeru(al4, n, n, sym, cs, bx, bx),
+        4 => l2::zgerc(al4, n, n, sym, cs, bx, bx),
+        5 => l2::zhemv(al, n, sym, cs, true, bx, be, y),
+        6 => {
+            l1::zcopy(bx, y);
+            l2::ztrmv(n, tri, cs, false, false, y);
+        }
+        7 => {
+            l1::zcopy(bx, y);
+            l2::ztrsv(n, tri, cs, false, false, y);
+        }
+        8 => l2::zher(0.0001, n, sym, cs, true, bx),
+        9 => l2::zher2(al4, n, sym, cs, true, bx, bx),
+        _ => return f64::NAN,
+    }
+    y[0].re + y[0].im + sym[0].re + y[n - 1].re
+}
+
+/// Level-3 c64 roofline rows. op: 0 gemm, 1 hemm_left, 2 herk,
+/// 3 her2k, 4 trmm_left, 5 trsm_left, 6 trmm_right, 7 trsm_right.
+#[no_mangle]
+pub extern "C" fn run_l3_layer_z(op: usize) -> f64 {
+    use faer_wasm_blas::L1 as l1;
+    use faer_wasm_blas::L3 as l3;
+    let s = state_mut();
+    let n = s.n;
+    let cs = s.n;
+    let len = if n == 0 { 0 } else { cs * (n - 1) + n };
+    let a = unsafe { core::slice::from_raw_parts(s.az.as_ptr(), len) };
+    let b = unsafe { core::slice::from_raw_parts(s.bz.as_ptr(), len) };
+    let tri = unsafe { core::slice::from_raw_parts(s.triz.as_ptr(), len) };
+    let sym = unsafe { core::slice::from_raw_parts_mut(s.symz.as_mut_ptr(), len) };
+    let refresh = |dst: &mut [C64]| {
+        for j in 0..n {
+            l1::zcopy(&b[j * cs..j * cs + n], &mut dst[j * cs..j * cs + n]);
+        }
+    };
+    let al = C64::new(0.001, 0.0);
+    let be = C64::new(0.5, 0.0);
+    let one = C64::ONE;
+    match op {
+        0 => l3::zgemm(al, n, n, n, a, cs, b, cs, be, sym, cs),
+        1 => l3::zhemm_left(al, n, n, tri, cs, true, b, cs, be, sym, cs),
+        2 => l3::zherk(0.001, n, n, a, cs, 0.5, sym, cs, true),
+        3 => l3::zher2k(al, n, n, a, cs, b, cs, 0.5, sym, cs, true),
+        4 => {
+            refresh(sym);
+            l3::ztrmm_left(one, n, n, tri, cs, false, false, sym, cs);
+        }
+        5 => {
+            refresh(sym);
+            l3::ztrsm_left(one, n, n, tri, cs, false, false, sym, cs);
+        }
+        6 => {
+            refresh(sym);
+            l3::ztrmm_right(one, n, n, tri, cs, true, false, sym, cs);
+        }
+        7 => {
+            refresh(sym);
+            l3::ztrsm_right(one, n, n, tri, cs, true, false, sym, cs);
+        }
+        _ => return f64::NAN,
+    }
+    sym[0].re + sym[0].im + sym[len - 1].re
+}
+
+/// c64 cross-target determinism probes, L1: fixed LCG data (len 1001 —
+/// odd, so the scalar tails run), one reduction per op. op: 0 dotu,
+/// 1 dotc, 2 nrm2, 3 asum, 4 iamax.
+#[no_mangle]
+pub extern "C" fn run_l1_probe_z(op: usize) -> f64 {
+    use faer_wasm_blas::L1 as l1;
+    const LEN: usize = 1001;
+    let mut s = 43u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let mut mk = |_: usize| -> Vec<C64> {
+        (0..LEN)
+            .map(|_| {
+                let re = next();
+                let im = next();
+                C64::new(re, im)
+            })
+            .collect()
+    };
+    let x = mk(0);
+    let y = mk(1);
+    match op {
+        0 => {
+            let d = l1::zdotu(&x, &y);
+            d.re + d.im
+        }
+        1 => {
+            let d = l1::zdotc(&x, &y);
+            d.re + d.im
+        }
+        2 => l1::dznrm2(&x),
+        3 => l1::dzasum(&x),
+        4 => l1::izamax(&x) as f64,
+        _ => f64::NAN,
+    }
+}
+
+/// c64 L2 determinism probes: fixed LCG-filled 257×257 complex matrix,
+/// one op each, folded with the layer's own dzasum. op: 0 gemv,
+/// 1 gemv_t, 2 gemv_c, 3 geru, 4 gerc, 5 hemv, 6 trmv, 7 trsv,
+/// 8 her, 9 her2.
+#[no_mangle]
+pub extern "C" fn run_l2_probe_z(op: usize) -> f64 {
+    use faer_wasm_blas::L1 as l1;
+    use faer_wasm_blas::L2 as l2;
+    const N: usize = 257;
+    let mut s = 8u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let mut a = alloc_mat_c64(N, &mut next);
+    for i in 0..N {
+        a[i * N + i] = C64::new(2.0 * N as f64 + 1.0, 0.7); // solve-safe diagonal
+    }
+    let cs = N;
+    let a_len = cs * (N - 1) + N;
+    let x: Vec<C64> = (0..N)
+        .map(|_| {
+            let re = next();
+            let im = next();
+            C64::new(re, im)
+        })
+        .collect();
+    let mut y: Vec<C64> = (0..N)
+        .map(|_| {
+            let re = next();
+            let im = next();
+            C64::new(re, im)
+        })
+        .collect();
+    let am = &mut a[..a_len];
+    let al = C64::new(0.7, -0.2);
+    let be = C64::new(0.3, 0.1);
+    match op {
+        0 => l2::zgemv(al, N, N, am, cs, &x, be, &mut y),
+        1 => l2::zgemv_t(al, N, N, am, cs, &x, be, &mut y),
+        2 => l2::zgemv_c(al, N, N, am, cs, &x, be, &mut y),
+        3 => l2::zgeru(al, N, N, am, cs, &x, &x),
+        4 => l2::zgerc(al, N, N, am, cs, &x, &x),
+        5 => l2::zhemv(al, N, am, cs, true, &x, be, &mut y),
+        6 => {
+            l1::zcopy(&x, &mut y);
+            l2::ztrmv(N, am, cs, false, false, &mut y);
+        }
+        7 => {
+            l1::zcopy(&x, &mut y);
+            l2::ztrsv(N, am, cs, false, false, &mut y);
+        }
+        8 => l2::zher(0.7, N, am, cs, true, &x),
+        9 => l2::zher2(al, N, am, cs, true, &x, &x),
+        _ => return f64::NAN,
+    }
+    let a_probe = &a[..N];
+    l1::dzasum(&y) + y[0].re + y[0].im + y[N - 1].re + l1::dzasum(a_probe)
+}
+
+/// c64 L3 determinism probes: fixed LCG-filled 65×65 complex matrices
+/// (odd — tails everywhere), one op each. op order matches
+/// run_l3_layer_z plus hemm_right at 8.
+#[no_mangle]
+pub extern "C" fn run_l3_probe_z(op: usize) -> f64 {
+    use faer_wasm_blas::L1 as l1;
+    use faer_wasm_blas::L3 as l3;
+    const N: usize = 65;
+    const K: usize = 33;
+    let mut st = 12u64;
+    let mut next = || {
+        st = st
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((st >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let mut a = alloc_mat_c64(N, &mut next);
+    for i in 0..N {
+        a[i * N + i] = C64::new(2.0 * N as f64 + 1.0, 0.7);
+    }
+    let b = alloc_mat_c64(N, &mut next);
+    let mut c = alloc_mat_c64(N, &mut next);
+    let cs = N;
+    let len = cs * (N - 1) + N;
+    let av = &a[..len];
+    let bv = &b[..len];
+    let cv = &mut c[..len];
+    let al = C64::new(0.7, -0.2);
+    let be = C64::new(0.3, 0.1);
+    match op {
+        0 => l3::zgemm(al, N, K, N, av, cs, bv, cs, be, cv, cs),
+        1 => l3::zhemm_left(al, N, N, av, cs, true, bv, cs, be, cv, cs),
+        2 => l3::zherk(0.7, N, K, av, cs, 0.3, cv, cs, true),
+        3 => l3::zher2k(al, N, K, av, cs, bv, cs, 0.3, cv, cs, true),
+        4 => l3::ztrmm_left(al, N, N, av, cs, false, false, cv, cs),
+        5 => l3::ztrsm_left(al, N, N, av, cs, false, false, cv, cs),
+        6 => l3::ztrmm_right(al, N, N, av, cs, true, false, cv, cs),
+        7 => l3::ztrsm_right(al, N, N, av, cs, true, false, cv, cs),
+        8 => l3::zhemm_right(al, N, N, av, cs, true, bv, cs, be, cv, cs),
+        _ => return f64::NAN,
+    }
+    let mut fold = 0.0;
+    for j in 0..N {
+        fold += l1::dzasum(&cv[j * cs..j * cs + N]);
+    }
+    fold + cv[0].re + cv[0].im + cv[len - 1].re
 }

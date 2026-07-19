@@ -79,6 +79,39 @@ mod imp {
 		pub unsafe fn lane1(self) -> f64 {
 			f64x2_extract_lane::<1>(self.0)
 		}
+		// ---- lane rearrangement/sign ops (the c64 layer's complex
+		// multiply is built from these; they are generic lane ops, no
+		// complex semantics here) ----
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn pair(a: f64, b: f64) -> Self {
+			Self(f64x2(a, b))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn swap(self) -> Self {
+			Self(i64x2_shuffle::<1, 0>(self.0, self.0))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn dup0(self) -> Self {
+			Self(i64x2_shuffle::<0, 0>(self.0, self.0))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn dup1(self) -> Self {
+			Self(i64x2_shuffle::<1, 1>(self.0, self.0))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn neg0(self) -> Self {
+			Self(v128_xor(self.0, f64x2(-0.0, 0.0)))
+		}
+		#[inline]
+		#[target_feature(enable = "simd128")]
+		pub unsafe fn neg1(self) -> Self {
+			Self(v128_xor(self.0, f64x2(0.0, -0.0)))
+		}
 	}
 }
 
@@ -145,6 +178,32 @@ mod imp {
 		#[inline(always)]
 		pub unsafe fn lane1(self) -> f64 {
 			self.0[1]
+		}
+		// ---- lane rearrangement/sign ops (exact — moves and sign
+		// flips only, so emulation is trivially bit-identical) ----
+		#[inline(always)]
+		pub unsafe fn pair(a: f64, b: f64) -> Self {
+			Self([a, b])
+		}
+		#[inline(always)]
+		pub unsafe fn swap(self) -> Self {
+			Self([self.0[1], self.0[0]])
+		}
+		#[inline(always)]
+		pub unsafe fn dup0(self) -> Self {
+			Self([self.0[0], self.0[0]])
+		}
+		#[inline(always)]
+		pub unsafe fn dup1(self) -> Self {
+			Self([self.0[1], self.0[1]])
+		}
+		#[inline(always)]
+		pub unsafe fn neg0(self) -> Self {
+			Self([-self.0[0], self.0[1]])
+		}
+		#[inline(always)]
+		pub unsafe fn neg1(self) -> Self {
+			Self([self.0[0], -self.0[1]])
 		}
 	}
 }

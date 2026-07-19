@@ -17,3 +17,10 @@ mod ssyr2k;
 mod ssyrk;
 mod strmm;
 mod strsm;
+
+mod zgemm;
+mod zhemm;
+mod zher2k;
+mod zherk;
+mod ztrmm;
+mod ztrsm;

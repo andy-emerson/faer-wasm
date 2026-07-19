@@ -8,8 +8,8 @@
 //
 // Lives beside the layer it measures (blas/bench). Build + run:
 //   cargo build --release --target wasm32-unknown-unknown --lib
-//   cargo run --release --bin native l1-bits[-f32] > bits.txt
-//   node l1-roofline.mjs target/wasm32-unknown-unknown/release/blas_bench.wasm bits.txt [--f32]
+//   cargo run --release --bin native l1-bits[-f32|-z] > bits.txt
+//   node l1-roofline.mjs target/wasm32-unknown-unknown/release/blas_bench.wasm bits.txt [--f32|--c64]
 import { readFileSync } from 'node:fs';
 
 const wasmPath = process.argv[2];
@@ -24,11 +24,16 @@ const e = instance.exports;
 // --f32 anywhere in argv: score the f32 layer (same recipes, *_f32
 // exports, 4-byte elements; the bandwidth ceiling is bytes-agnostic).
 const F32 = process.argv.includes('--f32');
-const sfx = F32 ? '_f32' : '';
-const EB = F32 ? 4 : 8;
+// --c64: score the c64 layer (*_z exports, 16-byte elements; dot
+// splits into dotu/dotc, scal gains the real-alpha zdscal row).
+const C64F = process.argv.includes('--c64');
+const sfx = C64F ? '_z' : F32 ? '_f32' : '';
+const EB = C64F ? 16 : F32 ? 4 : 8;
 
 // ---- determinism probes first (cheap, and a failure should kill the run)
-const probeNames = ['dot', 'asum', 'nrm2', 'iamax'];
+const probeNames = C64F
+	? ['dotu', 'dotc', 'nrm2', 'asum', 'iamax']
+	: ['dot', 'asum', 'nrm2', 'iamax'];
 const wasmBits = probeNames.map((_, op) => {
 	const buf = new DataView(new ArrayBuffer(8));
 	buf.setFloat64(0, e['run_l1_probe' + sfx](op));
@@ -47,7 +52,7 @@ if (bitsFile) {
 		}
 	});
 	if (!ok) process.exit(1);
-	console.log('native <-> wasm: bit-identical, all 4 probes');
+	console.log(`native <-> wasm: bit-identical, all ${probeNames.length} probes`);
 }
 
 // ---- roofline rows
@@ -70,7 +75,19 @@ const triadCeil = Math.max(ceilOnce(), ceilOnce(), ceilOnce());
 console.log(`\ntriad bandwidth (same run): ${triadCeil.toFixed(1)} GB/s`);
 
 // op index -> [name, bytes moved per call over the n^2 elements]
-const OPS = [
+const OPS = C64F ? [
+	['copy', 2 * EB * N * N],
+	['swap', 4 * EB * N * N],
+	['scal', 2 * EB * N * N],
+	['dscal', 2 * EB * N * N],
+	['axpy', 3 * EB * N * N],
+	['rot', 4 * EB * N * N],
+	['dotu', 2 * EB * N * N],
+	['dotc', 2 * EB * N * N],
+	['nrm2', EB * N * N],
+	['asum', EB * N * N],
+	['iamax', EB * N * N],
+] : [
 	['copy', 2 * EB * N * N],
 	['swap', 4 * EB * N * N],
 	['scal', 2 * EB * N * N],

@@ -19,3 +19,12 @@ mod ssyr;
 mod ssyr2;
 mod strmv;
 mod strsv;
+
+mod zgemv;
+mod zgerc;
+mod zgeru;
+mod zhemv;
+mod zher;
+mod zher2;
+mod ztrmv;
+mod ztrsv;

@@ -25,3 +25,16 @@ mod srot;
 mod srotg;
 mod sscal;
 mod sswap;
+
+mod dzasum;
+mod dznrm2;
+mod izamax;
+mod zaxpy;
+mod zcopy;
+mod zdotc;
+mod zdotu;
+mod zdrot;
+mod zdscal;
+mod zrotg;
+mod zscal;
+mod zswap;
