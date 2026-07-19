@@ -1,12 +1,19 @@
 //! `trmv` — triangular matrix × vector, in place: x ← Ax.
 //!
-//! Implementation: column-axpy — one Level 1 `axpy` stream per column,
-//! in reference `dtrmv`'s column order (ascending for upper, descending
-//! for lower) so each x[j] is consumed before its own slot is
-//! overwritten. Transposed form: not built — no consumer yet (explicit
-//! gap).
+//! Implementation: 4-column fan-in column-axpy (tuned 2026-07-19) —
+//! groups of four columns share one pass over x's common segment
+//! (`kernels::axpy4in`, sources in reference `dtrmv`'s column order:
+//! ascending for upper, descending for lower), so x's
+//! read-modify-write traffic drops 4×; the ≤3-row ragged band and the
+//! diagonal writes run scalar in the original step order. Each x[j]
+//! is still consumed before its own slot is overwritten (the four
+//! group t-values are provably untouched until their step), and the
+//! per-element rounding sequence is unchanged — bit-for-bit the plain
+//! column loop, locked by the existing test. Transposed form: not
+//! built — no consumer yet (explicit gap).
 
 use super::check_mat;
+use crate::kernels::axpy4in;
 use crate::level1::axpy;
 
 /// x ← Ax, A triangular n×n at column stride `cs`. `upper` selects the
@@ -15,22 +22,83 @@ use crate::level1::axpy;
 pub fn trmv(n: usize, a: &[f64], cs: usize, upper: bool, unit: bool, x: &mut [f64]) {
 	check_mat(a.len(), n, n, cs);
 	assert_eq!(x.len(), n, "trmv: x length mismatch");
+	let ap = a.as_ptr();
 	if upper {
-		for j in 0..n {
+		let mut j = 0usize;
+		while j + 4 <= n {
+			// all four t's are original: step j+u writes only x[..=j+u']
+			// for u' < u, never x[j+u]
+			let t = [x[j], x[j + 1], x[j + 2], x[j + 3]];
+			unsafe {
+				axpy4in(
+					ap.add(j * cs),
+					ap.add((j + 1) * cs),
+					ap.add((j + 2) * cs),
+					ap.add((j + 3) * cs),
+					t,
+					x.as_mut_ptr(),
+					j,
+				);
+			}
+			// ragged band + diagonals, original ascending step order
+			for u in 0..4 {
+				let cj = (j + u) * cs;
+				for i in j..j + u {
+					x[i] += t[u] * a[cj + i];
+				}
+				if !unit {
+					x[j + u] = t[u] * a[cj + j + u];
+				}
+			}
+			j += 4;
+		}
+		while j < n {
 			let col = &a[j * cs..j * cs + n];
 			let t = x[j];
 			axpy(t, &col[..j], &mut x[..j]);
 			if !unit {
 				x[j] = t * col[j];
 			}
+			j += 1;
 		}
 	} else {
-		for j in (0..n).rev() {
+		let r = n % 4;
+		// high leftover columns first, original descending order
+		for j in (n - r..n).rev() {
 			let col = &a[j * cs..j * cs + n];
 			let t = x[j];
 			axpy(t, &col[j + 1..], &mut x[j + 1..]);
 			if !unit {
 				x[j] = t * col[j];
+			}
+		}
+		let mut g = n - r;
+		while g >= 4 {
+			g -= 4;
+			// steps g+3 down to g; all four t's are original (step g+u'
+			// writes only x[g+u'+1..], never x[g..=g+u'])
+			let t = [x[g], x[g + 1], x[g + 2], x[g + 3]];
+			// common suffix x[g+4..], sources in descending step order
+			unsafe {
+				axpy4in(
+					ap.add((g + 3) * cs + g + 4),
+					ap.add((g + 2) * cs + g + 4),
+					ap.add((g + 1) * cs + g + 4),
+					ap.add(g * cs + g + 4),
+					[t[3], t[2], t[1], t[0]],
+					x.as_mut_ptr().add(g + 4),
+					n - g - 4,
+				);
+			}
+			// ragged band + diagonals, original descending step order
+			for u in (0..4).rev() {
+				let cj = (g + u) * cs;
+				for i in g + u + 1..g + 4 {
+					x[i] += t[u] * a[cj + i];
+				}
+				if !unit {
+					x[g + u] = t[u] * a[cj + g + u];
+				}
 			}
 		}
 	}
