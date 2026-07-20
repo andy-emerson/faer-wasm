@@ -18,6 +18,20 @@ if (!wasmPath) {
 	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
 	process.exit(2);
 }
+// TEMPORARY ROUTING (L3 roofline refresh on the packed-gemm dispatch,
+// all four types — revert after draws):
+{
+	const { execSync } = await import('node:child_process');
+	const run = (cmd, cwd) => execSync(cmd, { cwd, stdio: 'inherit' });
+	const out = (cmd, cwd) => execSync(cmd, { cwd }).toString();
+	const bb = '../blas/bench';
+	run('cargo build --release --target wasm32-unknown-unknown --lib', bb);
+	for (const [mode, flag] of [['l3-bits', ''], ['l3-bits-f32', '--f32'], ['l3-bits-z', '--c64'], ['l3-bits-c', '--c32']]) {
+		writeFileSync(`/tmp/${mode}.txt`, out(`cargo run --release --bin native ${mode}`, bb));
+		run(`node l3-roofline.mjs target/wasm32-unknown-unknown/release/blas_bench.wasm /tmp/${mode}.txt ${flag}`, bb);
+	}
+	process.exit(0);
+}
 const SIZES = [64, 128, 256, 512];
 // [name, faer bench export, faer args (fixed), python lambda body]
 // The *_tuned rows use the docs/wasm.md §7 parameters — the honest current
