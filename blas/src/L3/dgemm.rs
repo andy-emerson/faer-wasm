@@ -1,9 +1,12 @@
 //! `dgemm` — matrix multiplication: C ← αAB + βC.
 //!
-//! Implementation: size-dispatched column-daxpy family (tuned
-//! 2026-07-18): 4×4 register tile below ~1.5 MB of A, 4-column fused
-//! stream above — all bit-identical to the plain dgemv-per-column
-//! reference, which is kept as `dgemm_colaxpy`. Both tuned shapes beat
+//! Implementation: size-dispatched family (tuned 2026-07-18, packed
+//! shape added 2026-07-20): 4×4 register tile below ~1.5 MB of A,
+//! BLIS-style packed-panel shape above (replaced the 4-column fused
+//! stream after two unanimous runner draws: 1.24× at 512³, 1.44× at
+//! 1024³, 1.10–1.23× deep-K) — all bit-identical to the plain
+//! dgemv-per-column reference, which is kept as `dgemm_colaxpy`; col4
+//! stays as the raced mid-size reference. The pre-packed shapes beat
 //! faer's blocked dgemm at every measured size (1.4–1.8× small, ~1.25×
 //! large; docs/blas-ab-2026-07.md step 6). Transpose forms: not built
 //! — no consumer yet (dsyrk covers A·Aᵀ).
@@ -36,12 +39,17 @@ pub fn dgemm(
 	ccs: usize,
 ) {
 	// measured crossover between n=384 (A ≈ 1.2 MB: tiled) and n=512
-	// (A = 2 MB: col4) on both reference draws and the container
+	// (A = 2 MB) on both reference draws and the container. Above it,
+	// the packed-panel shape replaced col4 (packed-gemm race 2026-07-20,
+	// two runner draws unanimous: 1.24x at 512³, 1.44x at 1024³,
+	// 1.10–1.23x on deep-K prefill shapes; col4 stays as the raced
+	// reference). Packed also edged tiled +3% at 256³ — recorded, not
+	// routed: the tiled zone below 256³ is unmeasured.
 	const TILED_MAX_A_BYTES: usize = 3 << 19; // 1.5 MB
 	if m * k * 8 <= TILED_MAX_A_BYTES {
 		dgemm_tiled(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
 	} else {
-		dgemm_col4(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
+		dgemm_packed(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
 	}
 }
 

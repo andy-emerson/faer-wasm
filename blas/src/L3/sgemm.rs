@@ -1,13 +1,15 @@
 //! `sgemm` — matrix multiplication: C ← αAB + βC.
 //!
-//! Implementation: size-dispatched column-saxpy family (tuned
-//! 2026-07-18): 8×4 register tile below ~1.5 MB of A, 4-column fused
-//! stream above — all bit-identical to the plain sgemv-per-column
-//! reference, which is kept as `sgemm_colaxpy`. Shapes ported from the
-//! raced f64 layer (both beat faer's blocked sgemm at every measured
-//! f64 size — docs/blas-ab-2026-07.md step 6); f32 measurements:
-//! step 10. Transpose forms: not built — no consumer yet (ssyrk covers
-//! A·Aᵀ).
+//! Implementation: size-dispatched family (tuned 2026-07-18, packed
+//! shape added 2026-07-20): 8×4 register tile below ~3 MB of A,
+//! BLIS-style packed-panel shape above (replaced the 4-column fused
+//! stream: +3–5% at 1024³ and 512×4096×1024, two runner draws
+//! unanimous; the tile keeps everything below, where packed measured
+//! noise to −2%) — all bit-identical to the plain sgemv-per-column
+//! reference, which is kept as `sgemm_colaxpy`; col4 stays as the
+//! raced reference. f32 measurements: docs/blas-ab-2026-07.md steps
+//! 10 and 14. Transpose forms: not built — no consumer yet (ssyrk
+//! covers A·Aᵀ).
 
 use super::check_mat;
 use crate::kernels::saxpy4;
@@ -36,14 +38,17 @@ pub fn sgemm(
 ) {
 	// f32 crossover from the step-10 runner draws (which rule over the
 	// container, where col4 led from n=512): tiled wins unanimously
-	// through n=512, n=768 splits within noise, col4 wins unanimously
-	// at n=1024 — the 8-row tile survives LONGER in bytes than the f64
-	// 4-row tile's 1.5 MB. Threshold set between the unanimous points.
+	// through n=512, n=768 splits within noise — the 8-row tile
+	// survives LONGER in bytes than the f64 4-row tile's 1.5 MB.
+	// Above the threshold, the packed-panel shape replaced col4
+	// (packed-gemm race 2026-07-20, two runner draws: +3–4% at 1024³,
+	// +5% at 512x4096x1024, unanimous; 512³/256³ stay tiled, where
+	// packed measured noise/−2%). col4 stays as the raced reference.
 	const TILED_MAX_A_BYTES: usize = 3 << 20; // 3 MB
 	if m * k * 4 <= TILED_MAX_A_BYTES {
 		sgemm_tiled(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
 	} else {
-		sgemm_col4(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
+		sgemm_packed(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
 	}
 }
 

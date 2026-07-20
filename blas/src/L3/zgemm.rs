@@ -1,15 +1,16 @@
 //! `zgemm` — complex matrix multiplication: C ← αAB + βC.
 //!
-//! Implementation: 4-column fused column-zaxpy (the dgemm `col4`
-//! shape — each A column streams once per group of four C columns,
-//! `kernels::zaxpy4`), with the plain zgemv-per-column loop kept as
-//! `zgemm_colaxpy`, the raced-and-bit-checked reference. Both shapes
-//! are bit-for-bit identical, per-element sequence βC then ascending
-//! k. The f64 layer's small-size register tile has NO c64 twin yet —
-//! a complex tile is a different register geometry (one complex per
-//! register), so it's a recorded tuning lever, not a mechanical port;
-//! zgemm currently routes everything through col4. Transpose/
-//! conjugate forms: not built — no consumer yet (zherk covers A·Aᴴ).
+//! Implementation: size-dispatched (packed shape added 2026-07-20):
+//! 4-column fused column-zaxpy (`kernels::zaxpy4`) below 1 MB of A,
+//! BLIS-style packed-panel 2×4 complex register tile at and above
+//! (two runner draws unanimous at every measured size: 1.08–1.15× at
+//! 256³ to 1.33× at 1024³). The packed tile is the c64 register
+//! geometry the col4-era doc recorded as a non-starter — packing
+//! removes the strided k-walk that made it one. The plain
+//! zgemv-per-column loop stays as `zgemm_colaxpy`, the raced-and-
+//! bit-checked reference; all shapes are bit-for-bit identical,
+//! per-element sequence βC then ascending k. Transpose/conjugate
+//! forms: not built — no consumer yet (zherk covers A·Aᴴ).
 
 use super::check_mat;
 use crate::c64::C64;
@@ -35,6 +36,14 @@ pub fn zgemm(
 	check_mat(a.len(), m, k, acs);
 	check_mat(b.len(), k, n, bcs);
 	check_mat(c.len(), m, n, ccs);
+	// packed-gemm race 2026-07-20 (two runner draws, unanimous at every
+	// measured size): packed wins 1.08–1.15x at 256³ (A = 1 MB, the
+	// smallest measured point) up to 1.33x at 1024³. Below 1 MB of A is
+	// unmeasured — col4 keeps it.
+	const PACKED_MIN_A_BYTES: usize = 1 << 20; // 1 MB
+	if m * k * 16 >= PACKED_MIN_A_BYTES {
+		return zgemm_packed(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
+	}
 	let mut j = 0usize;
 	while j + 4 <= n {
 		{

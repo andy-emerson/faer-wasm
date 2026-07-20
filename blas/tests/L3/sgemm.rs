@@ -141,3 +141,22 @@ fn gemm_packed_bit_identical_to_colaxpy() {
 		}
 	}
 }
+
+#[test]
+fn gemm_dispatch_packed_zone_bit_identical() {
+	// A = 1032x800x4B = 3.3 MB > the 3 MB tiled threshold — the
+	// dispatcher routes packed; replay against colaxpy
+	let mut rng = Lcg(44);
+	let (m, k, n) = (1032, 800, 8);
+	let (acs, bcs, ccs) = (m, k, m);
+	let a = rng.mat_f32(m, k, acs);
+	let b = rng.mat_f32(k, n, bcs);
+	let c0 = rng.mat_f32(m, n, ccs);
+	let mut c1 = c0.clone();
+	sgemm_colaxpy(-0.7, m, k, n, &a, acs, &b, bcs, 0.4, &mut c1, ccs);
+	let mut c2 = c0.clone();
+	sgemm(-0.7, m, k, n, &a, acs, &b, bcs, 0.4, &mut c2, ccs);
+	for i in 0..c1.len() {
+		assert_eq!(c1[i].to_bits(), c2[i].to_bits(), "dispatch(packed zone) vs colaxpy @{i}");
+	}
+}

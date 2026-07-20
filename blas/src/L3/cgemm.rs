@@ -1,15 +1,15 @@
 //! `cgemm` — complex matrix multiplication: C ← αAB + βC.
 //!
-//! Implementation: 4-column fused column-caxpy (the dgemm `col4`
-//! shape — each A column streams once per group of four C columns,
-//! `kernels::caxpy4`), with the plain cgemv-per-column loop kept as
-//! `cgemm_colaxpy`, the raced-and-bit-checked reference. Both shapes
-//! are bit-for-bit identical, per-element sequence βC then ascending
-//! k. The f32 layer's small-size register tile has NO c32 twin yet —
-//! a complex tile is a different register geometry (one complex per
-//! register), so it's a recorded tuning lever, not a mechanical port;
-//! cgemm currently routes everything through col4. Transpose/
-//! conjugate forms: not built — no consumer yet (cherk covers A·Aᴴ).
+//! Implementation: size-dispatched (packed shape added 2026-07-20):
+//! 4-column fused column-caxpy (`kernels::caxpy4`) below 8 MB of A,
+//! BLIS-style packed-panel 4×4 complex register tile at and above —
+//! the only zone where the packed shape measured a win (+12% at
+//! 1024³, two runner draws unanimous; 256³–512³ and deep-K were
+//! noise, so col4 keeps them). The plain cgemv-per-column loop stays
+//! as `cgemm_colaxpy`, the raced-and-bit-checked reference; all
+//! shapes are bit-for-bit identical, per-element sequence βC then
+//! ascending k. Transpose/conjugate forms: not built — no consumer
+//! yet (cherk covers A·Aᴴ).
 
 use super::check_mat;
 use crate::c32::C32;
@@ -35,6 +35,14 @@ pub fn cgemm(
 	check_mat(a.len(), m, k, acs);
 	check_mat(b.len(), k, n, bcs);
 	check_mat(c.len(), m, n, ccs);
+	// packed-gemm race 2026-07-20 (two runner draws): packed wins only
+	// at 1024³ (+12%, A = 8 MB, unanimous); 256³/512³/deep-K measured
+	// noise. Routed at the measured win only — the (2 MB, 8 MB) gap is
+	// unmeasured and col4 keeps it.
+	const PACKED_MIN_A_BYTES: usize = 8 << 20; // 8 MB
+	if m * k * 8 >= PACKED_MIN_A_BYTES {
+		return cgemm_packed(alpha, m, k, n, a, acs, b, bcs, beta, c, ccs);
+	}
 	let mut j = 0usize;
 	while j + 4 <= n {
 		{
