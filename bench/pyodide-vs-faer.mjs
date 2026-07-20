@@ -18,16 +18,6 @@ if (!wasmPath) {
 	console.error('usage: PYODIDE_PATH=<pyodide.mjs> node pyodide-vs-faer.mjs <bench-wasm>');
 	process.exit(2);
 }
-// TEMPORARY ROUTING (packed-gemm race, all four types — revert after
-// draws):
-{
-	const { execSync } = await import('node:child_process');
-	const run = (cmd, cwd) => execSync(cmd, { cwd, stdio: 'inherit' });
-	const bb = '../blas/bench';
-	run('cargo build --release --target wasm32-unknown-unknown --lib', bb);
-	run('node packed-gemm-ab.mjs target/wasm32-unknown-unknown/release/blas_bench.wasm', bb);
-	process.exit(0);
-}
 const SIZES = [64, 128, 256, 512];
 // [name, faer bench export, faer args (fixed), python lambda body]
 // The *_tuned rows use the docs/wasm.md §7 parameters — the honest current
