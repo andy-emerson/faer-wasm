@@ -102,3 +102,42 @@ fn gemm_tiled_bit_identical_to_gemm() {
 fn gemm_short_storage_panics() {
 	sgemm(1.0, 2, 2, 2, &[1.0; 4], 2, &[1.0; 3], 2, 0.0, &mut [0.0; 4], 2);
 }
+
+#[test]
+fn gemm_packed_bit_identical_to_colaxpy() {
+	let mut rng = Lcg(42);
+	// sizes crossing the packed-path boundaries: KC (256) exact / +1 /
+	// with remainder, MC row-blocking, MR=8 row tails, 4-column tails
+	for &(m, k, n) in &[
+		(8usize, 8usize, 8usize),
+		(12, 7, 8),
+		(9, 5, 10),
+		(1, 1, 1),
+		(0, 0, 0),
+		(5, 16, 16),
+		(8, 300, 8),
+		(140, 260, 12),
+		(16, 256, 4),
+		(33, 257, 7),
+	] {
+		let (acs, bcs, ccs) = (m + 1, k + 2, m + 3);
+		let a = rng.mat_f32(m, k, acs);
+		let b = rng.mat_f32(k, n, bcs);
+		let c0 = rng.mat_f32(m, n, ccs);
+		for (alpha, beta) in [(1.0f32, 0.0f32), (-0.7, 0.4), (0.3, 1.0)] {
+			let mut c1 = c0.clone();
+			sgemm_colaxpy(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c1, ccs);
+			let mut c2 = c0.clone();
+			sgemm_packed(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c2, ccs);
+			for j in 0..n {
+				for i in 0..m {
+					assert_eq!(
+						c1[j * ccs + i].to_bits(),
+						c2[j * ccs + i].to_bits(),
+						"packed vs column-saxpy {m}x{k}x{n} ({i},{j})"
+					);
+				}
+			}
+		}
+	}
+}

@@ -112,3 +112,51 @@ fn zgemm_short_storage_panics() {
 	let b = [C64::ONE; 3];
 	zgemm(C64::ONE, 2, 2, 2, &a, 2, &b, 2, C64::ZERO, &mut [C64::ZERO; 4], 2);
 }
+
+#[test]
+fn zgemm_packed_bit_identical_to_colaxpy() {
+	let mut rng = Lcg(141);
+	// sizes crossing the packed-path boundaries: KC (256) exact / +1 /
+	// with remainder, MC (64) row-blocking, MR=2 row tails, column tails
+	for &(m, k, n) in &[
+		(8usize, 8usize, 8usize),
+		(12, 7, 8),
+		(9, 5, 10),
+		(1, 1, 1),
+		(0, 0, 0),
+		(5, 16, 16),
+		(8, 300, 8),
+		(140, 260, 12),
+		(16, 256, 4),
+		(33, 257, 7),
+	] {
+		let (acs, bcs, ccs) = (m + 1, k + 2, m + 3);
+		let a = rng.mat_c64(m, k, acs);
+		let b = rng.mat_c64(k, n, bcs);
+		let c0 = rng.mat_c64(m, n, ccs);
+		for (alpha, beta) in [
+			(C64::ONE, C64::ZERO),
+			(C64::new(-0.7, 0.2), C64::new(0.4, 0.1)),
+			(C64::new(0.3, -0.6), C64::ONE),
+		] {
+			let mut c1 = c0.clone();
+			zgemm_colaxpy(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c1, ccs);
+			let mut c2 = c0.clone();
+			zgemm_packed(alpha, m, k, n, &a, acs, &b, bcs, beta, &mut c2, ccs);
+			for j in 0..n {
+				for i in 0..m {
+					assert_eq!(
+						c1[j * ccs + i].re.to_bits(),
+						c2[j * ccs + i].re.to_bits(),
+						"packed vs column-zaxpy re {m}x{k}x{n} ({i},{j})"
+					);
+					assert_eq!(
+						c1[j * ccs + i].im.to_bits(),
+						c2[j * ccs + i].im.to_bits(),
+						"packed vs column-zaxpy im {m}x{k}x{n} ({i},{j})"
+					);
+				}
+			}
+		}
+	}
+}

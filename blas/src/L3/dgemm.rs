@@ -200,6 +200,177 @@ pub fn dgemm_col4(
 	}
 }
 
+/// Tuning-campaign candidate 3 (2026-07-20): packed-panel dgemm —
+/// BLIS/Goto structure around the same 4×4 microkernel math. The tile's
+/// weakness is its k-walk over A at column stride (TLB/prefetch-hostile
+/// once A outgrows the near caches — why the dispatch abandons it at
+/// 1.5 MB); this shape first copies a KC-deep block of B and an MC×KC
+/// block of A into contiguous packed panels, so the microkernel streams
+/// both operands sequentially regardless of matrix size. Motivating
+/// evidence: deep-K prefill shapes (k ≥ 2048), where a packed-panel
+/// competitor beat the col4 stream ~2× in a container probe — runner
+/// race pending.
+///
+/// Rounding sequence per element is IDENTICAL to the column-daxpy path:
+/// k-blocking resumes each element's accumulation from its stored
+/// partial, so the additions happen in the same ascending-k order with
+/// the same once-rounded α·b terms, β applied exactly once (first
+/// k-block) — bit-for-bit interchangeable, tested. Tails (m%4 rows,
+/// n%4 columns) fall back to the same per-column sequences the tile
+/// path uses.
+#[allow(clippy::too_many_arguments)]
+pub fn dgemm_packed(
+	alpha: f64,
+	m: usize,
+	k: usize,
+	n: usize,
+	a: &[f64],
+	acs: usize,
+	b: &[f64],
+	bcs: usize,
+	beta: f64,
+	c: &mut [f64],
+	ccs: usize,
+) {
+	check_mat(a.len(), m, k, acs);
+	check_mat(b.len(), k, n, bcs);
+	check_mat(c.len(), m, n, ccs);
+	// Panel sizes: Ap = MC·KC·8 = 256 KB (an L2-resident block), one
+	// Bp column-group strip = KC·4·8 = 8 KB (L1-resident). First-guess
+	// parameters — the race measures the shape, a later sweep can tune
+	// the numbers.
+	const KC: usize = 256;
+	const MC: usize = 128;
+	const MR: usize = 4;
+	if k == 0 {
+		// degenerate case the packed loops never reach: C ← βC
+		for j in 0..n {
+			crate::L2::dscale_y(beta, &mut c[j * ccs..j * ccs + m]);
+		}
+		return;
+	}
+	let n4 = n - n % 4;
+	let m_mr = m - m % MR;
+	if n4 > 0 && m_mr > 0 {
+		let mut bp = alloc::vec![0.0f64; KC * n4];
+		let mut ap = alloc::vec![0.0f64; MC * KC];
+		let mut pc = 0usize;
+		while pc < k {
+			let kc = KC.min(k - pc);
+			// pack B[pc.., 0..n4]: per 4-column group, k-major ×4
+			for jg in 0..n4 / 4 {
+				let dst = &mut bp[jg * kc * 4..(jg + 1) * kc * 4];
+				let j = jg * 4;
+				for l in 0..kc {
+					for u in 0..4 {
+						dst[l * 4 + u] = b[(j + u) * bcs + pc + l];
+					}
+				}
+			}
+			let first = pc == 0;
+			let mut ic = 0usize;
+			while ic < m_mr {
+				let mc = MC.min(m_mr - ic); // both multiples of MR
+				// pack A[ic..ic+mc, pc..pc+kc]: per MR-row group, k-major ×MR
+				for g in 0..mc / MR {
+					let base = g * kc * MR;
+					for l in 0..kc {
+						let src = (pc + l) * acs + ic + g * MR;
+						ap[base + l * MR..base + l * MR + MR]
+							.copy_from_slice(&a[src..src + MR]);
+					}
+				}
+				// jg outer / row-group inner: Ap rides L2 across column
+				// groups, each 8 KB Bp strip rides L1 across row groups
+				for jg in 0..n4 / 4 {
+					for g in 0..mc / MR {
+						unsafe {
+							tile_4x4_packed(
+								alpha,
+								kc,
+								ap.as_ptr().add(g * kc * MR),
+								bp.as_ptr().add(jg * kc * 4),
+								beta,
+								first,
+								c.as_mut_ptr().add(jg * 4 * ccs + ic + g * MR),
+								ccs,
+							);
+						}
+					}
+				}
+				ic += mc;
+			}
+			pc += kc;
+		}
+	}
+	// row tail (m_mr..m) × packed columns: per-column daxpy over full k
+	if m_mr < m {
+		for j in 0..n4 {
+			let seg = &mut c[j * ccs + m_mr..j * ccs + m];
+			crate::L2::dscale_y(beta, seg);
+			for l in 0..k {
+				crate::L1::daxpy(alpha * b[j * bcs + l], &a[l * acs + m_mr..l * acs + m], seg);
+			}
+		}
+	}
+	// column tail: plain dgemv columns over all rows
+	for j in n4..n {
+		dgemv(alpha, m, k, a, acs, &b[j * bcs..j * bcs + k], beta, &mut c[j * ccs..j * ccs + m]);
+	}
+}
+
+/// One 4×4 microkernel step over PACKED panels: `ap` walks MR=4
+/// contiguous row values per k step, `bp` walks 4 contiguous column
+/// values per k step. Math and per-element rounding order are identical
+/// to [`tile_4x4`]; `first` selects β-application (first k-block) vs
+/// continuing accumulation from the stored partial.
+/// # Safety
+/// `ap` must be valid for `kc*4` f64s, `bp` for `kc*4`; `cp` points at
+/// C[i, j] (stride ccs) with 4 rows and 4 columns in bounds.
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+#[allow(clippy::too_many_arguments)]
+unsafe fn tile_4x4_packed(
+	alpha: f64,
+	kc: usize,
+	ap: *const f64,
+	bp: *const f64,
+	beta: f64,
+	first: bool,
+	cp: *mut f64,
+	ccs: usize,
+) {
+	use crate::lanes::F64x2;
+	let zero = F64x2::splat(0.0);
+	let mut acc = [[zero; 2]; 4];
+	if first {
+		if beta != 0.0 {
+			let vb = F64x2::splat(beta);
+			for (u, au) in acc.iter_mut().enumerate() {
+				au[0] = F64x2::load(cp.add(u * ccs)).mul(vb);
+				au[1] = F64x2::load(cp.add(u * ccs + 2)).mul(vb);
+			}
+		}
+	} else {
+		for (u, au) in acc.iter_mut().enumerate() {
+			au[0] = F64x2::load(cp.add(u * ccs));
+			au[1] = F64x2::load(cp.add(u * ccs + 2));
+		}
+	}
+	for l in 0..kc {
+		let a0 = F64x2::load(ap.add(l * 4));
+		let a1 = F64x2::load(ap.add(l * 4 + 2));
+		for (u, au) in acc.iter_mut().enumerate() {
+			let t = F64x2::splat(alpha * *bp.add(l * 4 + u));
+			au[0] = au[0].add(a0.mul(t));
+			au[1] = au[1].add(a1.mul(t));
+		}
+	}
+	for (u, au) in acc.iter().enumerate() {
+		au[0].store(cp.add(u * ccs));
+		au[1].store(cp.add(u * ccs + 2));
+	}
+}
+
 /// One 4×4 tile: rows i..i+4 (two f64x2 registers) × columns j..j+4.
 /// # Safety
 /// `ap` points at A[i, 0] (stride acs, k columns), `bp` at B[0, j]

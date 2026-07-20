@@ -1643,3 +1643,79 @@ pub extern "C" fn run_l3_probe_c(op: usize) -> f64 {
     }
     (fold + cv[0].re + cv[0].im + cv[len - 1].re) as f64
 }
+
+/// Packed-gemm race rows (tuning campaign 2026-07-20): rectangular
+/// m×k×n gemm over the square state's buffers reinterpreted as
+/// contiguous column-major panels (A = first m·k of a, B = first k·n
+/// of b, C = first m·n of sym). Caller must `setup(N)` with
+/// m·k, k·n, m·n ≤ N². `ty`: 0 = f64, 1 = f32, 2 = c64, 3 = c32.
+/// Same α/β constants as the layer rows. Returns the C-corner fold —
+/// incumbent and packed are bit-identical by construction, so the
+/// race script asserts the two folds match exactly before timing.
+fn gemm_rect(ty: usize, m: usize, k: usize, n: usize, packed: bool) -> f64 {
+    use faer_wasm_blas::L3 as l3;
+    let s = state_mut();
+    let cap = s.n * s.n;
+    assert!(m * k <= cap && k * n <= cap && m * n <= cap, "gemm_rect: setup too small");
+    match ty {
+        0 => {
+            let a = &s.a[..m * k];
+            let b = &s.b[..k * n];
+            let c = &mut s.sym[..m * n];
+            if packed {
+                l3::dgemm_packed(0.001, m, k, n, a, m, b, k, 0.5, c, m);
+            } else {
+                l3::dgemm(0.001, m, k, n, a, m, b, k, 0.5, c, m);
+            }
+            c[0] + c[m * n - 1]
+        }
+        1 => {
+            let a = &s.a32[..m * k];
+            let b = &s.b32[..k * n];
+            let c = &mut s.sym32[..m * n];
+            if packed {
+                l3::sgemm_packed(0.001, m, k, n, a, m, b, k, 0.5, c, m);
+            } else {
+                l3::sgemm(0.001, m, k, n, a, m, b, k, 0.5, c, m);
+            }
+            (c[0] + c[m * n - 1]) as f64
+        }
+        2 => {
+            let al = C64::new(0.001, 0.0);
+            let be = C64::new(0.5, 0.0);
+            let a = &s.az[..m * k];
+            let b = &s.bz[..k * n];
+            let c = &mut s.symz[..m * n];
+            if packed {
+                l3::zgemm_packed(al, m, k, n, a, m, b, k, be, c, m);
+            } else {
+                l3::zgemm(al, m, k, n, a, m, b, k, be, c, m);
+            }
+            c[0].re + c[0].im + c[m * n - 1].re + c[m * n - 1].im
+        }
+        3 => {
+            let al = C32::new(0.001, 0.0);
+            let be = C32::new(0.5, 0.0);
+            let a = &s.ac[..m * k];
+            let b = &s.bc[..k * n];
+            let c = &mut s.symc[..m * n];
+            if packed {
+                l3::cgemm_packed(al, m, k, n, a, m, b, k, be, c, m);
+            } else {
+                l3::cgemm(al, m, k, n, a, m, b, k, be, c, m);
+            }
+            (c[0].re + c[0].im + c[m * n - 1].re + c[m * n - 1].im) as f64
+        }
+        _ => f64::NAN,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn run_gemm_rect_incumbent(ty: usize, m: usize, k: usize, n: usize) -> f64 {
+    gemm_rect(ty, m, k, n, false)
+}
+
+#[no_mangle]
+pub extern "C" fn run_gemm_rect_packed(ty: usize, m: usize, k: usize, n: usize) -> f64 {
+    gemm_rect(ty, m, k, n, true)
+}

@@ -10,6 +10,11 @@
 //! README.md in the crate root.
 #![no_std]
 
+// Only the packed-gemm paths allocate (pack buffers); everything else
+// stays allocation-free. Consumers must link a global allocator iff they
+// call a `*gemm_packed` routine — all current consumers already do.
+extern crate alloc;
+
 mod c32;
 mod c64;
 mod kernels;

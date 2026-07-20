@@ -202,6 +202,156 @@ pub fn sgemm_col4(
 	}
 }
 
+/// Tuning-campaign candidate 3 (2026-07-20): packed-panel sgemm —
+/// BLIS/Goto structure around the same 8×4 microkernel math; see
+/// `dgemm_packed` for the full rationale (deep-K motivation, cache
+/// roles of the two panels, bit-compat argument). Rounding sequence
+/// per element is IDENTICAL to the column-saxpy path — k-blocking
+/// resumes each element's accumulation from its stored partial —
+/// bit-for-bit interchangeable, tested.
+#[allow(clippy::too_many_arguments)]
+pub fn sgemm_packed(
+	alpha: f32,
+	m: usize,
+	k: usize,
+	n: usize,
+	a: &[f32],
+	acs: usize,
+	b: &[f32],
+	bcs: usize,
+	beta: f32,
+	c: &mut [f32],
+	ccs: usize,
+) {
+	check_mat(a.len(), m, k, acs);
+	check_mat(b.len(), k, n, bcs);
+	check_mat(c.len(), m, n, ccs);
+	// Ap = MC·KC·4 = 128 KB (L2-resident), one Bp strip = KC·4·4 = 4 KB
+	const KC: usize = 256;
+	const MC: usize = 128;
+	const MR: usize = 8;
+	if k == 0 {
+		for j in 0..n {
+			crate::L2::sscale_y(beta, &mut c[j * ccs..j * ccs + m]);
+		}
+		return;
+	}
+	let n4 = n - n % 4;
+	let m_mr = m - m % MR;
+	if n4 > 0 && m_mr > 0 {
+		let mut bp = alloc::vec![0.0f32; KC * n4];
+		let mut ap = alloc::vec![0.0f32; MC * KC];
+		let mut pc = 0usize;
+		while pc < k {
+			let kc = KC.min(k - pc);
+			for jg in 0..n4 / 4 {
+				let dst = &mut bp[jg * kc * 4..(jg + 1) * kc * 4];
+				let j = jg * 4;
+				for l in 0..kc {
+					for u in 0..4 {
+						dst[l * 4 + u] = b[(j + u) * bcs + pc + l];
+					}
+				}
+			}
+			let first = pc == 0;
+			let mut ic = 0usize;
+			while ic < m_mr {
+				let mc = MC.min(m_mr - ic); // both multiples of MR
+				for g in 0..mc / MR {
+					let base = g * kc * MR;
+					for l in 0..kc {
+						let src = (pc + l) * acs + ic + g * MR;
+						ap[base + l * MR..base + l * MR + MR]
+							.copy_from_slice(&a[src..src + MR]);
+					}
+				}
+				for jg in 0..n4 / 4 {
+					for g in 0..mc / MR {
+						unsafe {
+							tile_8x4_packed(
+								alpha,
+								kc,
+								ap.as_ptr().add(g * kc * MR),
+								bp.as_ptr().add(jg * kc * 4),
+								beta,
+								first,
+								c.as_mut_ptr().add(jg * 4 * ccs + ic + g * MR),
+								ccs,
+							);
+						}
+					}
+				}
+				ic += mc;
+			}
+			pc += kc;
+		}
+	}
+	if m_mr < m {
+		for j in 0..n4 {
+			let seg = &mut c[j * ccs + m_mr..j * ccs + m];
+			crate::L2::sscale_y(beta, seg);
+			for l in 0..k {
+				crate::L1::saxpy(alpha * b[j * bcs + l], &a[l * acs + m_mr..l * acs + m], seg);
+			}
+		}
+	}
+	for j in n4..n {
+		sgemv(alpha, m, k, a, acs, &b[j * bcs..j * bcs + k], beta, &mut c[j * ccs..j * ccs + m]);
+	}
+}
+
+/// One 8×4 microkernel step over PACKED panels: `ap` walks MR=8
+/// contiguous row values per k step, `bp` walks 4 contiguous column
+/// values per k step. Math and per-element rounding order identical to
+/// [`tile_8x4`]; `first` selects β-application vs continuing from the
+/// stored partial.
+/// # Safety
+/// `ap` must be valid for `kc*8` f32s, `bp` for `kc*4`; `cp` points at
+/// C[i, j] (stride ccs) with 8 rows and 4 columns in bounds.
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
+#[allow(clippy::too_many_arguments)]
+unsafe fn tile_8x4_packed(
+	alpha: f32,
+	kc: usize,
+	ap: *const f32,
+	bp: *const f32,
+	beta: f32,
+	first: bool,
+	cp: *mut f32,
+	ccs: usize,
+) {
+	use crate::lanes::F32x4;
+	let zero = F32x4::splat(0.0);
+	let mut acc = [[zero; 2]; 4];
+	if first {
+		if beta != 0.0 {
+			let vb = F32x4::splat(beta);
+			for (u, au) in acc.iter_mut().enumerate() {
+				au[0] = F32x4::load(cp.add(u * ccs)).mul(vb);
+				au[1] = F32x4::load(cp.add(u * ccs + 4)).mul(vb);
+			}
+		}
+	} else {
+		for (u, au) in acc.iter_mut().enumerate() {
+			au[0] = F32x4::load(cp.add(u * ccs));
+			au[1] = F32x4::load(cp.add(u * ccs + 4));
+		}
+	}
+	for l in 0..kc {
+		let a0 = F32x4::load(ap.add(l * 8));
+		let a1 = F32x4::load(ap.add(l * 8 + 4));
+		for (u, au) in acc.iter_mut().enumerate() {
+			let t = F32x4::splat(alpha * *bp.add(l * 4 + u));
+			au[0] = au[0].add(a0.mul(t));
+			au[1] = au[1].add(a1.mul(t));
+		}
+	}
+	for (u, au) in acc.iter().enumerate() {
+		au[0].store(cp.add(u * ccs));
+		au[1].store(cp.add(u * ccs + 4));
+	}
+}
+
 /// One 8×4 tile: rows i..i+8 (two f32x4 registers) × columns j..j+4 —
 /// the f64 4×4 tile with the same register count at twice the lane
 /// width.
