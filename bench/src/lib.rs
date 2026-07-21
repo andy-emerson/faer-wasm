@@ -1413,7 +1413,7 @@ pub extern "C" fn run_l1_ab(op: usize, variant: usize) -> f64 {
     }
 }
 
-// ---- the shipped BLAS layer (blas/ crate), Level 1: roofline rows +
+// ---- the shipped BLAS layer (the blas.wasm repo since the split), Level 1: roofline rows +
 // cross-target determinism probes. run_l1_layer streams every column of
 // the n×n state through the layer's function; the script scores GB/s
 // against the same-run bandwidth ceiling. Mutating ops run in place on
@@ -1649,7 +1649,7 @@ unsafe fn ceiling_flops_imp(iters: usize) -> f64 {
 
 
 // The BLAS-layer rows, determinism probes, and their f32 twins moved
-// to blas/bench (blas-bench crate, 2026-07-19) — the layer measures
+// to the blas.wasm repo's bench module (2026-07-19/20) — the layer measures
 // itself; this harness keeps only the faer-dependent benches (and
 // run_ceiling_bw/run_ceiling_flops for the legacy ceilings.mjs).
 // gemm-tune-ab.mjs loads both wasm modules for the faer race.

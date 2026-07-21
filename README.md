@@ -89,12 +89,16 @@ ROADMAP "Re-derived goals".
   most of this suite", geomean 0.41×) with a current-status note on top;
   the wasm-shaped kernels since flipped matmul/QR/LU-solve/eigvals to
   wins — current tables live in `docs/research-eig-wasm-2026-07.md`.
-- `blas/` — **`faer-wasm-blas`**, the wasm-native BLAS layer (the
-  foundation the LAPACK-layer kernels re-route onto): one file per
-  routine per type in netlib naming, all four number types
-  (f64/f32/c64/c32) built, tested, and runner-scored — 98 routines,
-  144 tests, 90 cross-target probes; self-measuring (`blas/bench/`,
-  scoreboard in its README), plan of record in `blas/README.md`.
+- the BLAS layer — **moved to its own repo,
+  [wasiware/blas.wasm](https://github.com/wasiware/blas.wasm)** (crate
+  `blas-wasm`), at the 2026-07-20 split: the wasm-native BLAS this
+  repo's LAPACK-layer kernels re-route onto — all four number types
+  (f64/f32/c64/c32), 98 routines, 152 tests, 90 cross-target probes,
+  self-measuring. Consumed here at a pinned revision
+  (`bench/BLAS-WASM-PIN.txt`, same philosophy as the faer pin).
+  Evidence-grid rows below citing `blas/...` paths describe where the
+  evidence lived when the claims were made; the files now live in
+  blas.wasm.
 - `bench/` + `docs/benchmarks-2026-07.md` — the wasm-vs-native benchmark
   harness (f64 + c64 ops) and its first published numbers (opt-level
   ~1.75×, relaxed-SIMD ~11%, large matmul at 1.8–1.9× native, mid-size

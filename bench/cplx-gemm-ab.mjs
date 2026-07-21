@@ -1,7 +1,8 @@
 // Complex-gemm market race (close-out campaign, 2026-07-19): faer's
 // blocked complex matmul vs the blas layer's zgemm/cgemm, interleaved
 // on one machine across sizes. Same two-module structure as
-// gemm-tune-ab.mjs (the blas rows live in blas/bench). The blas rows
+// gemm-tune-ab.mjs (the blas rows live in the blas.wasm repo's bench
+// module — BLAS-WASM-PIN.txt has the pinned build). The blas rows
 // do slightly MORE work per call (αAB + βC blend vs faer's replace) —
 // the comparison is conservative against us.
 //   node cplx-gemm-ab.mjs <bench-wasm> <blas-bench-wasm>

@@ -13,7 +13,6 @@ name = "native"
 [dependencies]
 faer = { path = "../faer-rs/faer", default-features = false, features = ["linalg"] }
 faer-schur = { path = "../schur" }
-faer-wasm-blas = { path = "../blas" }
 faer-wasm-kernels = { path = "../kernels" }
 pulp = { path = "../pulp/pulp", default-features = false, features = ["relaxed-simd"] }
 

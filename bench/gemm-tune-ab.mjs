@@ -2,7 +2,8 @@
 // register tile / 4-column fused) + faer's blocked gemm, across
 // sizes, interleaved on one machine — locates the tile↔col4 dispatch
 // crossover on the reference class. Since the 2026-07-19 restructure
-// the blas rows live in their own module (blas/bench), so this loads
+// the blas rows live in the blas.wasm repo's bench module (see
+// BLAS-WASM-PIN.txt for the pinned build), so this loads
 // TWO wasm files side by side — same process, same machine, still an
 // interleaved race.
 //   node gemm-tune-ab.mjs <bench-wasm> <blas-bench-wasm>

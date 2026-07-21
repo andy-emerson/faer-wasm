@@ -1,0 +1,12 @@
+# The BLAS layer lives in its own repo since the 2026-07-20 split.
+# Market-race scripts (gemm-tune-ab.mjs, cplx-gemm-ab.mjs) need its
+# bench module (blas_bench.wasm); build it from the pinned revision —
+# same philosophy as the faer pin in patches/UPSTREAM-BASE.txt:
+# nothing moves under us without an explicit re-pin + gate re-run.
+repo: https://github.com/wasiware/blas.wasm
+rev:  3eaf4bffd26723731a06a02bc7ef078c9992255d
+build:
+  git clone https://github.com/wasiware/blas.wasm && cd blas.wasm
+  git checkout <rev>
+  cd bench && cargo build --release --target wasm32-unknown-unknown --lib
+  # -> target/wasm32-unknown-unknown/release/blas_bench.wasm

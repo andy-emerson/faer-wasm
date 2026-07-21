@@ -23,7 +23,7 @@ fn time_op(f: impl Fn() -> f64, n: usize) -> f64 {
 
 fn main() {
     let label = std::env::args().nth(1).unwrap_or_else(|| "native-o3".into());
-    // (the blas determinism-bits modes moved to blas/bench.)
+    // (the blas determinism-bits modes live in the blas.wasm repo.)
     let ops: &[(&str, usize, extern "C" fn() -> f64)] = &[
         ("matmul", 256, bench_harness::run_matmul),
         ("lu_solve", 256, bench_harness::run_lu_solve),

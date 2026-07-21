@@ -13,19 +13,19 @@ evidence log: docs/blas-ab-2026-07.md steps 1–6. Scoreboard: STATUS §3.
   Co-Authored-By + Claude-Session trailers. Run `git add` from the
   repo ROOT — after `cd blas`/`cd bench`, relative pathspecs fail.
 - The session token CANNOT edit `.github/workflows/*` (no workflow
-  scope). Open item for Andy: add `cd blas && cargo test --release`
-  gate line to CI.
+  scope). (The blas CI-gate open item resolved itself at the
+  2026-07-20 split — blas.wasm has its own gate workflow.)
 
 ## Runner measurement procedure (used for every verdict)
 1. Insert a TEMPORARY routing block in `bench/pyodide-vs-faer.mjs`
    just before the `const SIZES = [64, 128, 256, 512];` anchor.
-   Since the 2026-07-19 restructure the blas rooflines live in
-   blas/bench (own wasm, builds in seconds): execSync
-   `cd ../blas/bench && cargo build --release --target
-   wasm32-unknown-unknown --lib`, then per level `cargo run --release
-   --bin native lN-bits[-f32|-z|-c] > /tmp/bits` and `node
-   lN-roofline.mjs target/.../blas_bench.wasm /tmp/bits
-   [--f32|--c64|--c32]` (cwd blas/bench), then `process.exit(0)`. Commit as
+   Since the 2026-07-20 SPLIT the blas layer lives in its own repo
+   (wasiware/blas.wasm — pin + build recipe: bench/BLAS-WASM-PIN.txt).
+   A routing block measuring blas must first clone it at the pinned
+   rev (execSync git clone + checkout), then build its bench module
+   and run its lN-roofline.mjs scripts exactly as before (they moved
+   verbatim; blas-side measurement can also run in ITS repo's own CI
+   once it grows a bench workflow). Then `process.exit(0)`. Commit as
    "TEMPORARY: ... (revert after draws)". NOTE: the implementation
    being measured must ALSO be committed/pushed before dispatch —
    the runner clones the branch head.
@@ -54,7 +54,9 @@ evidence log: docs/blas-ab-2026-07.md steps 1–6. Scoreboard: STATUS §3.
   rounding + one mul-add per k, k ascending) — that's what makes
   dispatch invisible and testable with assert_eq on bits.
 - Levels 2/3 are literal loops of Level 1/2 calls on column slices —
-  one stream implementation per op (map: blas/src/README.md). Layout
+  one stream implementation per op (map: src/README.md in the
+  blas.wasm repo — all blas/... paths below are that repo since the
+  2026-07-20 split). Layout
   since the 2026-07-19 restructure: netlib naming, one file per
   routine per type (daxpy.rs/saxpy.rs...) under src/L{1,2,3}; tuned
   kernels (d/saxpy4, d/saxpy4in, d/saxpy_dot(4)) in src/kernels.rs;
@@ -63,7 +65,8 @@ evidence log: docs/blas-ab-2026-07.md steps 1–6. Scoreboard: STATUS §3.
   bit-identity results and expected probe patterns are
   blas/tests/README.md.
 
-## bench harness map (bench/ = faer side; blas/bench = blas side)
+## bench harness map (bench/ = faer side; blas side = the blas.wasm
+repo's bench/ since the split)
 - State: a, b (inputs), sym (SACRIFICIAL — triad destination and L2/L3
   mutation target), tri (a with diag = 2n+1, keeps solves bounded),
   rhs (n×1 scratch for L2 y / trmv/trsv x).

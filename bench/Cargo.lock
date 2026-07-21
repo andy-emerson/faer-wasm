@@ -14,7 +14,6 @@ version = "0.1.0"
 dependencies = [
  "faer",
  "faer-schur",
- "faer-wasm-blas",
  "faer-wasm-kernels",
  "pulp",
 ]
@@ -126,13 +125,6 @@ dependencies = [
  "pulp",
  "qd",
  "reborrow",
-]
-
-[[package]]
-name = "faer-wasm-blas"
-version = "0.1.0"
-dependencies = [
- "libm",
 ]
 
 [[package]]
