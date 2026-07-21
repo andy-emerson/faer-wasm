@@ -4,7 +4,7 @@
 # same philosophy as the faer pin in patches/UPSTREAM-BASE.txt:
 # nothing moves under us without an explicit re-pin + gate re-run.
 repo: https://github.com/wasiware/blas.wasm
-rev:  3eaf4bffd26723731a06a02bc7ef078c9992255d
+rev:  579beba0e498f978510e0e5a2b962867d1102b0f
 build:
   git clone https://github.com/wasiware/blas.wasm && cd blas.wasm
   git checkout <rev>
